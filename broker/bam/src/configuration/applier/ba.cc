@@ -1,20 +1,20 @@
 /**
-* Copyright 2014-2017, 2021 Centreon
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* For more information : contact@centreon.com
-*/
+ * Copyright 2014-2017, 2021 Centreon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For more information : contact@centreon.com
+ */
 
 #include "com/centreon/broker/bam/configuration/applier/ba.hh"
 #include <fmt/format.h>
@@ -23,19 +23,24 @@
 #include "com/centreon/broker/bam/ba_ratio_number.hh"
 #include "com/centreon/broker/bam/ba_ratio_percent.hh"
 #include "com/centreon/broker/bam/ba_worst.hh"
+#include "com/centreon/broker/bam/internal.hh"
 #include "com/centreon/broker/config/applier/state.hh"
-#include "com/centreon/broker/log_v2.hh"
 #include "com/centreon/broker/multiplexing/publisher.hh"
 #include "com/centreon/broker/neb/host.hh"
 #include "com/centreon/broker/neb/service.hh"
+#include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon::broker;
 using namespace com::centreon::broker::bam::configuration;
+using com::centreon::common::log_v2::log_v2;
 
 /**
- *  Default constructor.
+ * @brief Constructor of an applier of BA.
+ *
+ * @param logger The logger to use.
  */
-applier::ba::ba() {}
+applier::ba::ba(const std::shared_ptr<spdlog::logger>& logger)
+    : _logger{logger} {}
 
 /**
  *  Copy constructor.
@@ -70,7 +75,7 @@ applier::ba& applier::ba::operator=(applier::ba const& other) {
  *  @param[in] my_bas  BAs to apply.
  *  @param[in] book    The service book.
  */
-void applier::ba::apply(bam::configuration::state::bas const& my_bas,
+void applier::ba::apply(const bam::configuration::state::bas& my_bas,
                         service_book& book) {
   //
   // DIFF
@@ -121,7 +126,7 @@ void applier::ba::apply(bam::configuration::state::bas const& my_bas,
   for (std::map<uint32_t, applied>::iterator it = to_delete.begin(),
                                              end = to_delete.end();
        it != end; ++it) {
-    log_v2::bam()->info("BAM: removing BA {}", it->first);
+    _logger->info("BAM: removing BA {}", it->first);
     std::shared_ptr<io::data> s;
     if (bbdo3_enabled) {
       auto bs = _ba_pb_service(it->first, it->second.cfg.get_host_id(),
@@ -145,8 +150,8 @@ void applier::ba::apply(bam::configuration::state::bas const& my_bas,
   for (bam::configuration::state::bas::iterator it = to_create.begin(),
                                                 end = to_create.end();
        it != end; ++it) {
-    log_v2::bam()->info("BAM: creating BA {} ('{}')", it->first,
-                        it->second.get_name());
+    _logger->info("BAM: creating BA {} ('{}')", it->first,
+                  it->second.get_name());
     std::shared_ptr<bam::ba> new_ba(_new_ba(it->second, book));
     applied& content(_applied[it->first]);
     content.cfg = it->second;
@@ -172,14 +177,14 @@ void applier::ba::apply(bam::configuration::state::bas const& my_bas,
   for (auto& b : to_modify) {
     std::map<uint32_t, applied>::iterator pos = _applied.find(b.get_id());
     if (pos != _applied.end()) {
-      log_v2::bam()->info("BAM: modifying BA {}", b.get_id());
+      _logger->info("BAM: modifying BA {}", b.get_id());
       pos->second.obj->set_name(b.get_name());
       assert(pos->second.obj->get_state_source() == b.get_state_source());
       pos->second.obj->set_level_warning(b.get_warning_level());
       pos->second.obj->set_level_critical(b.get_critical_level());
       pos->second.cfg = b;
     } else
-      log_v2::bam()->error(
+      _logger->error(
           "BAM: attempting to modify BA {}, however associated object was not "
           "found. This is likely a software bug that you should report to "
           "Centreon Broker developers",
@@ -267,8 +272,8 @@ std::shared_ptr<neb::service> applier::ba::_ba_service(uint32_t ba_id,
                                                        uint32_t host_id,
                                                        uint32_t service_id,
                                                        bool in_downtime) {
-  log_v2::bam()->trace("_ba_service ba {}, service {}:{} with downtime {}",
-                       ba_id, host_id, service_id, in_downtime);
+  _logger->trace("_ba_service ba {}, service {}:{} with downtime {}", ba_id,
+                 host_id, service_id, in_downtime);
   auto s{std::make_shared<neb::service>()};
   s->host_id = host_id;
   s->service_id = service_id;
@@ -293,8 +298,8 @@ std::shared_ptr<neb::pb_service> applier::ba::_ba_pb_service(
     uint32_t host_id,
     uint32_t service_id,
     bool in_downtime) {
-  log_v2::bam()->trace("_ba_pb_service ba {}, service {}:{} with downtime {}",
-                       ba_id, host_id, service_id, in_downtime);
+  _logger->trace("_ba_pb_service ba {}, service {}:{} with downtime {}", ba_id,
+                 host_id, service_id, in_downtime);
   auto s{std::make_shared<neb::pb_service>()};
   auto& o = s->mut_obj();
   o.set_host_id(host_id);
@@ -332,23 +337,28 @@ std::shared_ptr<bam::ba> applier::ba::_new_ba(configuration::ba const& cfg,
   switch (cfg.get_state_source()) {
     case configuration::ba::state_source_impact:
       obj = std::make_shared<bam::ba_impact>(cfg.get_id(), cfg.get_host_id(),
-                                             cfg.get_service_id(), false);
+                                             cfg.get_service_id(), false,
+                                             _logger);
       break;
     case configuration::ba::state_source_best:
-      obj = std::make_shared<bam::ba_best>(cfg.get_id(), cfg.get_host_id(),
-                                           cfg.get_service_id(), false);
+      obj =
+          std::make_shared<bam::ba_best>(cfg.get_id(), cfg.get_host_id(),
+                                         cfg.get_service_id(), false, _logger);
       break;
     case configuration::ba::state_source_worst:
-      obj = std::make_shared<bam::ba_worst>(cfg.get_id(), cfg.get_host_id(),
-                                            cfg.get_service_id(), false);
+      obj =
+          std::make_shared<bam::ba_worst>(cfg.get_id(), cfg.get_host_id(),
+                                          cfg.get_service_id(), false, _logger);
       break;
     case configuration::ba::state_source_ratio_percent:
       obj = std::make_shared<bam::ba_ratio_percent>(
-          cfg.get_id(), cfg.get_host_id(), cfg.get_service_id(), false);
+          cfg.get_id(), cfg.get_host_id(), cfg.get_service_id(), false,
+          _logger);
       break;
     case configuration::ba::state_source_ratio_number:
       obj = std::make_shared<bam::ba_ratio_number>(
-          cfg.get_id(), cfg.get_host_id(), cfg.get_service_id(), false);
+          cfg.get_id(), cfg.get_host_id(), cfg.get_service_id(), false,
+          _logger);
       break;
     default:
       /* Should not arrive */
@@ -371,13 +381,11 @@ std::shared_ptr<bam::ba> applier::ba::_new_ba(configuration::ba const& cfg,
  *  @param[in] cache  The cache.
  */
 void applier::ba::save_to_cache(persistent_cache& cache) {
-  cache.transaction();
   for (std::map<uint32_t, applied>::const_iterator it = _applied.begin(),
                                                    end = _applied.end();
        it != end; ++it) {
     it->second.obj->save_inherited_downtime(cache);
   }
-  cache.commit();
 }
 
 /**
@@ -385,53 +393,42 @@ void applier::ba::save_to_cache(persistent_cache& cache) {
  *
  *  @param[in] cache  The cache.
  */
-void applier::ba::load_from_cache(persistent_cache& cache) {
-  log_v2::bam()->trace("BAM: loading inherited downtimes from cache");
+void applier::ba::apply_inherited_downtime(const inherited_downtime& dwn) {
   auto bbdo = config::applier::state::instance().get_bbdo_version();
   bool bbdo3_enabled = bbdo.major_v >= 3;
-  std::shared_ptr<io::data> d;
-  cache.get(d);
-  while (d) {
-    if (d->type() == inherited_downtime::static_type()) {
-      inherited_downtime const& dwn =
-          *std::static_pointer_cast<inherited_downtime const>(d);
-      std::map<uint32_t, applied>::iterator found = _applied.find(dwn.ba_id);
-      if (found != _applied.end()) {
-        log_v2::bam()->debug("BAM: found an inherited downtime for BA {}",
-                             found->first);
-        found->second.obj->set_inherited_downtime(dwn);
-        std::shared_ptr<io::data> s;
-        if (bbdo3_enabled)
-          s = _ba_pb_service(found->first, found->second.cfg.get_host_id(),
-                             found->second.cfg.get_service_id(),
-                             dwn.in_downtime);
-        else
-          s = _ba_service(found->first, found->second.cfg.get_host_id(),
-                          found->second.cfg.get_service_id(), dwn.in_downtime);
-        multiplexing::publisher().write(s);
-      }
-      cache.get(d);
-    } else if (d->type() == pb_inherited_downtime::static_type()) {
-      pb_inherited_downtime const& dwn =
-          *std::static_pointer_cast<pb_inherited_downtime const>(d);
-      std::map<uint32_t, applied>::iterator found =
-          _applied.find(dwn.obj().ba_id());
-      if (found != _applied.end()) {
-        log_v2::bam()->debug("BAM: found an inherited downtime for BA {}",
-                             found->first);
-        found->second.obj->set_inherited_downtime(dwn);
-        std::shared_ptr<io::data> s;
-        if (bbdo3_enabled)
-          s = _ba_pb_service(found->first, found->second.cfg.get_host_id(),
-                             found->second.cfg.get_service_id(),
-                             dwn.obj().in_downtime());
-        else
-          s = _ba_service(found->first, found->second.cfg.get_host_id(),
-                          found->second.cfg.get_service_id(),
-                          dwn.obj().in_downtime());
-        multiplexing::publisher().write(s);
-      }
-      cache.get(d);
-    }
+
+  std::map<uint32_t, applied>::iterator found = _applied.find(dwn.ba_id);
+  if (found != _applied.end()) {
+    _logger->debug("BAM: found an inherited downtime for BA {}", found->first);
+    found->second.obj->set_inherited_downtime(dwn);
+    std::shared_ptr<io::data> s;
+    if (bbdo3_enabled)
+      s = _ba_pb_service(found->first, found->second.cfg.get_host_id(),
+                         found->second.cfg.get_service_id(), dwn.in_downtime);
+    else
+      s = _ba_service(found->first, found->second.cfg.get_host_id(),
+                      found->second.cfg.get_service_id(), dwn.in_downtime);
+    multiplexing::publisher().write(s);
+  }
+}
+
+void applier::ba::apply_inherited_downtime(const pb_inherited_downtime& dwn) {
+  auto bbdo = config::applier::state::instance().get_bbdo_version();
+  bool bbdo3_enabled = bbdo.major_v >= 3;
+  std::map<uint32_t, applied>::iterator found =
+      _applied.find(dwn.obj().ba_id());
+  if (found != _applied.end()) {
+    _logger->debug("BAM: found an inherited downtime for BA {}", found->first);
+    found->second.obj->set_inherited_downtime(dwn);
+    std::shared_ptr<io::data> s;
+    if (bbdo3_enabled)
+      s = _ba_pb_service(found->first, found->second.cfg.get_host_id(),
+                         found->second.cfg.get_service_id(),
+                         dwn.obj().in_downtime());
+    else
+      s = _ba_service(found->first, found->second.cfg.get_host_id(),
+                      found->second.cfg.get_service_id(),
+                      dwn.obj().in_downtime());
+    multiplexing::publisher().write(s);
   }
 }

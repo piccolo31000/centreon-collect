@@ -3,7 +3,10 @@ name: Centreon collect packaging
 on:
   workflow_call:
     inputs:
-      version:
+      major_version:
+        required: true
+        type: string
+      minor_version:
         required: true
         type: string
       img_version:
@@ -55,6 +58,11 @@ jobs:
             package_extension: deb
             runner: collect-arm64
             arch: arm64
+          - image: centreon-collect-debian-bookworm-arm64
+            distrib: bookworm
+            package_extension: deb
+            runner: collect-arm64
+            arch: arm64
 
     runs-on: ${{ fromJson(format('["self-hosted", "{0}"]', matrix.runner)) }}
 
@@ -75,7 +83,7 @@ jobs:
 
     steps:
       - name: Checkout sources
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Install sccache
         run: |
@@ -100,9 +108,9 @@ jobs:
         if: ${{ matrix.package_extension == 'rpm' }}
         run: |
           cd selinux
-          for MODULE in "centreon-engine" "centreon-broker"; do
+          for MODULE in "centreon-engine" "centreon-broker" "centreon-monitoring-agent"; do
             cd $MODULE
-            sed -i "s/@VERSION@/${{ inputs.version }}/g" $MODULE.te
+            sed -i "s/@VERSION@/${{ inputs.major_version }}.${{ inputs.minor_version }}/g" $MODULE.te
             make -f /usr/share/selinux/devel/Makefile
             cd -
           done
@@ -115,17 +123,27 @@ jobs:
 
       - name: Compile sources
         run: |
-          sudo pip3 install conan==1.61.0 --prefix=/usr --upgrade
-
-          sudo conan install . -s compiler.cppstd=17 -s compiler.libcxx=libstdc++11 --build=missing
-
           CMAKE="cmake3"
           if [ "${{ matrix.package_extension }}" = "deb" ]; then
             CMAKE="cmake"
           fi
 
-          sudo $CMAKE \
-                  -G "Ninja" \
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            export VCPKG_FORCE_SYSTEM_BINARIES=1
+            export TRIPLET=arm64-linux-release
+          else
+            export TRIPLET=x64-linux-release
+          fi
+
+          mv /root/.cache /github/home/
+          export VCPKG_ROOT="/vcpkg"
+          export PATH="$VCPKG_ROOT:$PATH"
+          $CMAKE \
+                  -B build \
+                  -DVCPKG_OVERLAY_TRIPLETS=/custom-triplets \
+                  -DVCPKG_TARGET_TRIPLET=$TRIPLET \
+                  -DVCPKG_OVERLAY_PORTS=/overlays \
+                  -GNinja \
                   -DDEBUG_ROBOT=OFF \
                   -DWITH_TESTING=OFF \
                   -DWITH_BENCH=ON \
@@ -142,12 +160,11 @@ jobs:
                   -DWITH_CREATE_FILES=OFF \
                   -DWITH_CONFIG_FILES=ON \
                   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                  -DNG=ON \
                   -DCMAKE_C_COMPILER_LAUNCHER=${SCCACHE_PATH} \
                   -DCMAKE_CXX_COMPILER_LAUNCHER=${SCCACHE_PATH} \
-                  .
+                  -S .
 
-          sudo ninja
+          ninja -Cbuild
         shell: bash
 
       - name: Cache statistics
@@ -160,7 +177,23 @@ jobs:
 
       - name: Generate debug files
         run: |
-          for file in $(find ./{lib/*.so,bin} -type f); do
+          for file in $(find build/{broker,engine,clib,connectors} -name '*.so' -type f); do
+            echo "Making a debug file of $file"
+            objcopy --only-keep-debug $file $file.debug
+            objcopy --strip-debug $file
+            objcopy --add-gnu-debuglink $file.debug $file
+          done
+          exe=("build/broker/cbd"
+               "build/broker/watchdog/cbwd"
+               "build/engine/centengine"
+               "build/engine/centenginestats"
+               "build/engine/modules/bench/centengine_bench_passive"
+               "build/connectors/perl/centreon_connector_perl"
+               "build/connectors/ssh/centreon_connector_ssh"
+               "build/ccc/ccc"
+               "build/agent/centagent")
+          for file in ${exe[@]}; do
+            echo "Making a debug file of $file"
             objcopy --only-keep-debug $file $file.debug
             objcopy --strip-debug $file
             objcopy --add-gnu-debuglink $file.debug $file
@@ -172,7 +205,8 @@ jobs:
           nfpm_file_pattern: "packaging/*.yaml"
           distrib: ${{ matrix.distrib }}
           package_extension: ${{ matrix.package_extension }}
-          version: ${{ inputs.version }}
+          major_version: ${{ inputs.major_version }}
+          minor_version: ${{ inputs.minor_version }}
           release: ${{ inputs.release }}
           arch: ${{ matrix.arch }}
           commit_hash: ${{ inputs.commit_hash }}
@@ -189,7 +223,7 @@ jobs:
       # set condition to true if artifacts are needed
       - if: ${{ false }}
         name: Upload package artifacts
-        uses: actions/upload-artifact@26f96dfa697d77e81fd5907df203aa23a56210a8 # v4.3.0
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         with:
           name: packages-${{ matrix.distrib }}-${{ matrix.arch }}
           path: ./*.${{ matrix.package_extension}}

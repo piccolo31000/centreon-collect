@@ -1,20 +1,20 @@
 /**
-* Copyright 2015 Centreon
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* For more information : contact@centreon.com
-*/
+ * Copyright 2015 Centreon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For more information : contact@centreon.com
+ */
 
 #include "com/centreon/broker/file/directory_watcher.hh"
 
@@ -29,12 +29,13 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "com/centreon/broker/log_v2.hh"
 #include "com/centreon/exceptions/msg_fmt.hh"
+#include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon::exceptions;
 using namespace com::centreon::broker;
 using namespace com::centreon::broker::file;
+using log_v2 = com::centreon::common::log_v2::log_v2;
 
 /**
  * Default constructor.
@@ -131,6 +132,8 @@ std::vector<directory_event> directory_watcher::get_events() {
   if (!FD_ISSET(_inotify_instance_id, &set))
     return (ret);
 
+  auto logger = log_v2::instance().get(log_v2::CORE);
+
   // Get the events
   int buf_size;
   if (ioctl(_inotify_instance_id, FIONREAD, &buf_size) == -1) {
@@ -138,8 +141,7 @@ std::vector<directory_event> directory_watcher::get_events() {
     throw msg_fmt("directory_watcher: couldn't read events: '{}'",
                   ::strerror(err));
   }
-  log_v2::core()->debug("file: directory watcher getting events of size {}",
-                        buf_size);
+  logger->debug("file: directory watcher getting events of size {}", buf_size);
   char* buf = (char*)alloca(buf_size);
   int len = ::read(_inotify_instance_id, buf, buf_size);
   if (len == -1) {
@@ -190,9 +192,10 @@ std::vector<directory_event> directory_watcher::get_events() {
     }
 
     ret.push_back(directory_event(name, event_type, ft));
-    log_v2::core()->debug(
-        "file: directory watcher getting an event for path '{}' and type {}",
-        name, event_type);
+    logger->debug(
+        "file: directory watcher getting an event for path '{}' and type "
+        "{}",
+        name, static_cast<uint32_t>(event_type));
   }
 
   return ret;

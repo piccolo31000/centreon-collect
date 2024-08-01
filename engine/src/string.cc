@@ -41,7 +41,7 @@ bool string::get_next_line(std::ifstream& stream,
                            unsigned int& pos) {
   while (std::getline(stream, line, '\n')) {
     ++pos;
-    string::trim(line);
+    boost::algorithm::trim(line);
     if (!line.empty()) {
       char c(line[0]);
       if (c != '#' && c != ';' && c != '\x0')
@@ -448,4 +448,17 @@ void string::unescape(char* buffer) {
     }
     *buffer = 0;
   }
+}
+
+/**
+ * @brief  * @brief Unescape the string buffer. Works with \t, \n, \r and \\.
+ * The buffer is directly changed. No copy is made.
+ *
+ * @param str in out modified string
+ */
+void string::unescape(std::string& str) {
+  boost::replace_all(str, "\\n", "\n");
+  boost::replace_all(str, "\\r", "\r");
+  boost::replace_all(str, "\\t", "\t");
+  boost::replace_all(str, "\\\\", "\\");
 }

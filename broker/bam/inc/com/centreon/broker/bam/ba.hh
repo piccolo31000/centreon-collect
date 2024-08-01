@@ -1,5 +1,5 @@
 /**
- * Copyright 2014-2015, 2021-2023 Centreon
+ * Copyright 2014-2015, 2021-2024 Centreon
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,9 +30,7 @@
 #include "com/centreon/broker/io/stream.hh"
 #include "com/centreon/broker/persistent_cache.hh"
 
-namespace com::centreon::broker {
-
-namespace bam {
+namespace com::centreon::broker::bam {
 // Forward declaration.
 class kpi;
 
@@ -90,11 +88,6 @@ class ba : public computable, public service_listener {
   double _level_hard{100.0};
   double _level_soft{100.0};
 
-  double _downtime_hard{0.0};
-  double _downtime_soft{0.0};
-  double _acknowledgement_hard{0.0};
-  double _acknowledgement_soft{0.0};
-
   std::unordered_map<kpi*, impact_info> _impacts;
   bool _valid{true};
   configuration::ba::downtime_behaviour _dt_behaviour{
@@ -108,7 +101,8 @@ class ba : public computable, public service_listener {
                               const impact_values& new_hard_impact,
                               const impact_values& new_soft_impact,
                               bool in_downtime) = 0;
-  std::shared_ptr<pb_ba_status> _generate_ba_status(bool state_changed) const;
+  virtual std::shared_ptr<pb_ba_status> _generate_ba_status(
+      bool state_changed) const = 0;
   std::shared_ptr<io::data> _generate_virtual_service_status() const;
 
  public:
@@ -116,7 +110,8 @@ class ba : public computable, public service_listener {
      uint32_t host_id,
      uint32_t service_id,
      configuration::ba::state_source source,
-     bool generate_virtual_status = true);
+     bool generate_virtual_status,
+     const std::shared_ptr<spdlog::logger>& logger);
   ba(const ba&) = delete;
   virtual ~ba() noexcept = default;
   ba& operator=(ba const& other) = delete;
@@ -158,8 +153,6 @@ class ba : public computable, public service_listener {
   void dump(const std::string& filename) const;
   void dump(std::ofstream& output) const override;
 };
-}  // namespace bam
-
-}  // namespace com::centreon::broker
+}  // namespace com::centreon::broker::bam
 
 #endif  // !CCB_BAM_BA_HH

@@ -1,20 +1,20 @@
 /**
-* Copyright 2018-2023 Centreon
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* For more information : contact@centreon.com
-*/
+ * Copyright 2018-2023 Centreon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For more information : contact@centreon.com
+ */
 
 #include "com/centreon/broker/sql/mysql_stmt.hh"
 
@@ -24,7 +24,7 @@
 #include "com/centreon/broker/io/events.hh"
 #include "com/centreon/broker/io/protobuf.hh"
 #include "com/centreon/broker/mapping/entry.hh"
-#include "com/centreon/broker/misc/string.hh"
+#include "com/centreon/common/utf8.hh"
 
 using namespace com::centreon::exceptions;
 using namespace com::centreon::broker;
@@ -63,8 +63,8 @@ mysql_stmt::mysql_stmt(const std::string& query,
  * @return An unique pointer to a mysql_bind.
  */
 std::unique_ptr<mysql_bind> mysql_stmt::create_bind() {
-  log_v2::sql()->trace("new mysql bind of stmt {}", get_id());
-  auto retval = std::make_unique<mysql_bind>(get_param_count());
+  _logger->trace("new mysql bind of stmt {}", get_id());
+  auto retval = std::make_unique<mysql_bind>(get_param_count(), _logger);
   return retval;
 }
 
@@ -107,7 +107,7 @@ mysql_stmt& mysql_stmt::operator=(mysql_stmt&& other) {
  */
 std::unique_ptr<mysql_bind> mysql_stmt::get_bind() {
   if (_bind)
-    log_v2::sql()->trace("mysql bind of stmt {} returned", get_id());
+    _logger->trace("mysql bind of stmt {} returned", get_id());
   return std::move(_bind);
 }
 
@@ -162,17 +162,17 @@ void mysql_stmt::operator<<(io::data const& d) {
               const std::string& v(current_entry->get_string(d, &max_len));
               fmt::string_view sv;
               if (max_len > 0 && v.size() > max_len) {
-                log_v2::sql()->trace(
+                _logger->trace(
                     "column '{}' should admit a longer string, it is cut to {} "
                     "characters to be stored anyway.",
                     current_entry->get_name_v2(), max_len);
-                max_len = misc::string::adjust_size_utf8(v, max_len);
+                max_len = common::adjust_size_utf8(v, max_len);
                 sv = fmt::string_view(v.data(), max_len);
               } else
                 sv = fmt::string_view(v);
               uint32_t attr = current_entry->get_attribute();
 
-              if (attr & mapping::entry::invalid_on_zero && sv.size() == 0)
+              if ((attr & mapping::entry::invalid_on_zero) && sv.size() == 0)
                 bind_null_str_k(field);
               else
                 bind_value_as_str_k(field, sv);
@@ -279,11 +279,11 @@ void mysql_stmt::operator<<(io::data const& d) {
             std::string v(refl->GetString(*p, f));
             fmt::string_view sv;
             if (max_len > 0 && v.size() > max_len) {
-              log_v2::sql()->trace(
+              _logger->trace(
                   "column '{}' should admit a longer string, it is cut to {} "
                   "characters to be stored anyway.",
                   field, max_len);
-              max_len = misc::string::adjust_size_utf8(v, max_len);
+              max_len = common::adjust_size_utf8(v, max_len);
               sv = fmt::string_view(v.data(), max_len);
             } else
               sv = fmt::string_view(v);
@@ -297,7 +297,7 @@ void mysql_stmt::operator<<(io::data const& d) {
             throw msg_fmt(
                 "invalid mapping for object of type '{}': {} is not a know "
                 "type ID",
-                info->get_name(), f->type());
+                info->get_name(), static_cast<uint32_t>(f->type()));
         }
       }
     }
@@ -310,7 +310,7 @@ void mysql_stmt::operator<<(io::data const& d) {
 
 void mysql_stmt::bind_value_as_f32(size_t range, float value) {
   if (!_bind)
-    _bind = std::make_unique<database::mysql_bind>(get_param_count());
+    _bind = std::make_unique<database::mysql_bind>(get_param_count(), _logger);
 
   if (std::isinf(value) || std::isnan(value))
     _bind->set_null_f32(range);
@@ -320,13 +320,13 @@ void mysql_stmt::bind_value_as_f32(size_t range, float value) {
 
 void mysql_stmt::bind_null_f32(size_t range) {
   if (!_bind)
-    _bind = std::make_unique<database::mysql_bind>(get_param_count());
+    _bind = std::make_unique<database::mysql_bind>(get_param_count(), _logger);
   _bind->set_null_f32(range);
 }
 
 void mysql_stmt::bind_value_as_f64(size_t range, double value) {
   if (!_bind)
-    _bind = std::make_unique<database::mysql_bind>(get_param_count());
+    _bind = std::make_unique<database::mysql_bind>(get_param_count(), _logger);
 
   if (std::isinf(value) || std::isnan(value))
     _bind->set_null_f64(range);
@@ -336,21 +336,23 @@ void mysql_stmt::bind_value_as_f64(size_t range, double value) {
 
 void mysql_stmt::bind_null_f64(size_t range) {
   if (!_bind)
-    _bind = std::make_unique<database::mysql_bind>(get_param_count());
+    _bind = std::make_unique<database::mysql_bind>(get_param_count(), _logger);
   _bind->set_null_f64(range);
 }
 
-#define BIND_VALUE(ftype, vtype)                                         \
-  void mysql_stmt::bind_value_as_##ftype(size_t range, vtype value) {    \
-    if (!_bind)                                                          \
-      _bind = std::make_unique<database::mysql_bind>(get_param_count()); \
-    _bind->set_value_as_##ftype(range, value);                           \
-  }                                                                      \
-                                                                         \
-  void mysql_stmt::bind_null_##ftype(size_t range) {                     \
-    if (!_bind)                                                          \
-      _bind = std::make_unique<database::mysql_bind>(get_param_count()); \
-    _bind->set_null_##ftype(range);                                      \
+#define BIND_VALUE(ftype, vtype)                                              \
+  void mysql_stmt::bind_value_as_##ftype(size_t range, vtype value) {         \
+    if (!_bind)                                                               \
+      _bind =                                                                 \
+          std::make_unique<database::mysql_bind>(get_param_count(), _logger); \
+    _bind->set_value_as_##ftype(range, value);                                \
+  }                                                                           \
+                                                                              \
+  void mysql_stmt::bind_null_##ftype(size_t range) {                          \
+    if (!_bind)                                                               \
+      _bind =                                                                 \
+          std::make_unique<database::mysql_bind>(get_param_count(), _logger); \
+    _bind->set_null_##ftype(range);                                           \
   }
 
 BIND_VALUE(i32, int32_t)

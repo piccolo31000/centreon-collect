@@ -1,20 +1,20 @@
 /**
-* Copyright 2018 Centreon
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* For more information : contact@centreon.com
-*/
+ * Copyright 2018 Centreon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For more information : contact@centreon.com
+ */
 
 #include <gtest/gtest.h>
 #include "bbdo/storage/status.hh"
@@ -24,18 +24,21 @@
 #include "com/centreon/broker/neb/events.hh"
 #include "com/centreon/broker/simu/luabinding.hh"
 #include "com/centreon/exceptions/msg_fmt.hh"
+#include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon::exceptions;
 using namespace com::centreon::broker;
 using namespace com::centreon::broker::misc;
 using namespace com::centreon::broker::simu;
-
-extern std::shared_ptr<asio::io_context> g_io_context;
+using com::centreon::common::log_v2::log_v2;
 
 class SimuGenericTest : public ::testing::Test {
+ protected:
+  std::shared_ptr<spdlog::logger> _logger;
+
  public:
   void SetUp() override {
-    g_io_context->restart();
+    _logger = log_v2::instance().get(log_v2::LUA);
     try {
       config::applier::init(0, "test_broker", 0);
     } catch (std::exception const& e) {
@@ -69,8 +72,9 @@ class SimuGenericTest : public ::testing::Test {
 // Then an exception is thrown
 TEST_F(SimuGenericTest, MissingScript) {
   std::map<std::string, misc::variant> conf;
-  ASSERT_THROW(new luabinding("/tmp/this_script_does_not_exist.lua", conf),
-               msg_fmt);
+  ASSERT_THROW(
+      new luabinding("/tmp/this_script_does_not_exist.lua", conf, _logger),
+      msg_fmt);
 }
 
 // When a lua script with error such as number divided by nil is loaded
@@ -81,7 +85,7 @@ TEST_F(SimuGenericTest, FaultyScript) {
   CreateScript(filename,
                "local a = { 1, 2, 3 }\n"
                "local b = 18 / a[4]");
-  ASSERT_THROW(new luabinding(filename, conf), msg_fmt);
+  ASSERT_THROW(new luabinding(filename, conf, _logger), msg_fmt);
   RemoveFile(filename);
 }
 
@@ -91,7 +95,7 @@ TEST_F(SimuGenericTest, WithoutInit) {
   std::map<std::string, misc::variant> conf;
   std::string filename("/tmp/without_init.lua");
   CreateScript(filename, "local a = { 1, 2, 3 }\n");
-  ASSERT_THROW(new luabinding(filename, conf), msg_fmt);
+  ASSERT_THROW(new luabinding(filename, conf, _logger), msg_fmt);
   RemoveFile(filename);
 }
 
@@ -104,7 +108,7 @@ TEST_F(SimuGenericTest, IncompleteScript) {
                "end\n"
                "local a = { 1, 2, 3 }\n");
   std::map<std::string, misc::variant> conf;
-  ASSERT_THROW(new luabinding(filename, conf), msg_fmt);
+  ASSERT_THROW(new luabinding(filename, conf, _logger), msg_fmt);
   RemoveFile(filename);
 }
 
@@ -119,7 +123,7 @@ TEST_F(SimuGenericTest, ReadReturnValue1) {
                "return 2\n"
                "end\n");
   std::map<std::string, misc::variant> conf;
-  std::unique_ptr<luabinding> lb(new luabinding(filename, conf));
+  std::unique_ptr<luabinding> lb(new luabinding(filename, conf, _logger));
   std::shared_ptr<io::data> d;
   ASSERT_THROW(lb->read(d), msg_fmt);
   RemoveFile(filename);
@@ -136,7 +140,7 @@ TEST_F(SimuGenericTest, ReadReturnValue2) {
                "return nil\n"
                "end\n");
   std::map<std::string, misc::variant> conf;
-  std::unique_ptr<luabinding> lb(new luabinding(filename, conf));
+  std::unique_ptr<luabinding> lb(new luabinding(filename, conf, _logger));
   std::shared_ptr<io::data> d;
   ASSERT_FALSE(lb->read(d));
   RemoveFile(filename);
@@ -155,7 +159,7 @@ TEST_F(SimuGenericTest, ReadReturnValue3) {
                "return { a='toto' }\n"
                "end\n");
   std::map<std::string, misc::variant> conf;
-  std::unique_ptr<luabinding> lb(new luabinding(filename, conf));
+  std::unique_ptr<luabinding> lb(new luabinding(filename, conf, _logger));
   std::shared_ptr<io::data> d;
   ASSERT_FALSE(lb->read(d));
   RemoveFile(filename);
@@ -181,9 +185,10 @@ TEST_F(SimuGenericTest, ReadReturnValue4) {
                "}\n"
                "end\n");
   std::map<std::string, misc::variant> conf;
-  config::applier::modules modules;
-  modules.load_file("./lib/10-neb.so");
-  std::unique_ptr<luabinding> lb = std::make_unique<luabinding>(filename, conf);
+  config::applier::modules modules(_logger);
+  modules.load_file("./broker/neb/10-neb.so");
+  std::unique_ptr<luabinding> lb =
+      std::make_unique<luabinding>(filename, conf, _logger);
   std::shared_ptr<io::data> d;
   ASSERT_TRUE(lb->read(d));
   RemoveFile(filename);
@@ -217,9 +222,9 @@ TEST_F(SimuGenericTest, ReadReturnCustomVariable) {
                "    default_value=\"centengine\"}\n"
                "end\n");
   std::map<std::string, misc::variant> conf;
-  config::applier::modules modules;
-  modules.load_file("./lib/10-neb.so");
-  std::unique_ptr<luabinding> lb(new luabinding(filename, conf));
+  config::applier::modules modules(_logger);
+  modules.load_file("./broker/neb/10-neb.so");
+  std::unique_ptr<luabinding> lb(new luabinding(filename, conf, _logger));
   std::shared_ptr<io::data> d;
   ASSERT_TRUE(lb->read(d));
   RemoveFile(filename);

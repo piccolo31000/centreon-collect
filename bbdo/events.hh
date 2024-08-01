@@ -22,9 +22,7 @@
 #include <cstdint>
 #include <cstring>
 
-namespace com {
-namespace centreon {
-namespace broker {
+namespace com::centreon::broker {
 namespace io {
 enum data_category {
   none = 0,
@@ -35,7 +33,8 @@ enum data_category {
   bam = 6,
   extcmd = 7,
   generator = 8,
-  max_data_category = 9,
+  local = 9,
+  max_data_category = 10,
   internal = 65535
 };
 constexpr uint16_t category_id(const char* name) {
@@ -55,6 +54,8 @@ constexpr uint16_t category_id(const char* name) {
     return dumper;
   if (std::string_view("generator", 9) == name)
     return generator;
+  if (std::string_view("local", 5) == name)
+    return local;
   return none;
 }
 constexpr const char* category_name(data_category cat) {
@@ -75,6 +76,8 @@ constexpr const char* category_name(data_category cat) {
       return "generator";
     case internal:
       return "internal";
+    case local:
+      return "local";
     default:
       return "unknown category";
   }
@@ -147,7 +150,9 @@ enum data_element {
   de_pb_host_group = 49,
   de_pb_host_group_member = 50,
   de_pb_service_group = 51,
-  de_pb_service_group_member = 52
+  de_pb_service_group_member = 52,
+  de_pb_host_parent = 53,
+  de_pb_instance_configuration = 54
 };
 }  // namespace neb
 namespace storage {
@@ -164,6 +169,9 @@ enum data_element {
   de_pb_status = 10,
   de_pb_index_mapping = 11,
   de_pb_metric_mapping = 12,
+  de_pb_otl_metrics =
+      13  // contain an
+          // ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest
 };
 }
 namespace bam {
@@ -197,12 +205,19 @@ enum data_element {
   de_pb_kpi_status = 27,
   de_pb_ba_duration_event = 28,
   de_pb_dimension_ba_timeperiod_relation = 29,
-  de_pb_dimension_truncate_table_signal = 30
+  de_pb_dimension_truncate_table_signal = 30,
+  de_pb_services_book_state = 31,
 };
 }
 
 namespace extcmd {
 enum data_element { de_pb_bench = 1, de_ba_info = 2 };
+}
+
+namespace local {
+enum data_element {
+  de_pb_stop = 1,
+};
 }
 
 constexpr uint32_t make_type(io::data_category cat, uint32_t elem) {
@@ -214,8 +229,6 @@ constexpr uint16_t category_of_type(uint32_t type) {
 constexpr uint16_t element_of_type(uint32_t type) {
   return static_cast<uint16_t>(type);
 }
-}  // namespace broker
-}  // namespace centreon
-}  // namespace com
+}  // namespace com::centreon::broker
 
 #endif /* !CC_BROKER_EVENTS_HH */

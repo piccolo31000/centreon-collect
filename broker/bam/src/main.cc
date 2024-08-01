@@ -1,5 +1,5 @@
 /**
- * Copyright 2011-2015, 2020-2023 Centreon
+ * Copyright 2011-2015, 2020-2024 Centreon
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
  */
 
 #include "bbdo/bam/ba_duration_event.hh"
+#include "bbdo/bam/ba_event.hh"
 #include "bbdo/bam/ba_status.hh"
 #include "bbdo/bam/dimension_ba_bv_relation_event.hh"
 #include "bbdo/bam/dimension_ba_event.hh"
@@ -36,11 +37,12 @@
 #include "com/centreon/broker/bam/internal.hh"
 #include "com/centreon/broker/io/events.hh"
 #include "com/centreon/broker/io/protocols.hh"
-#include "com/centreon/broker/log_v2.hh"
 #include "com/centreon/exceptions/msg_fmt.hh"
+#include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon::exceptions;
 using namespace com::centreon::broker;
+using log_v2 = com::centreon::common::log_v2::log_v2;
 
 // Load count.
 namespace {
@@ -89,12 +91,13 @@ bool broker_module_deinit() {
  */
 void broker_module_init(void const* arg) {
   (void)arg;
+  auto logger = log_v2::instance().get(log_v2::BAM);
 
   // Increment instance number.
   if (!instances++) {
     // BAM module.
-    log_v2::bam()->info("BAM: module for Centreon Broker {} ",
-                        CENTREON_BROKER_VERSION);
+    logger->info("BAM: module for Centreon Broker {} ",
+                 CENTREON_BROKER_VERSION);
 
     io::protocols::instance().reg(bam_module, std::make_shared<bam::factory>(),
                                   1, 7);
@@ -109,6 +112,7 @@ void broker_module_init(void const* arg) {
       e.register_event(make_type(io::storage, storage::de_status), "status",
                        &storage::status::operations, storage::status::entries);
 
+      register_bam_event<bam::ba_event>(e, bam::de_ba_event, "ba_event");
       register_bam_event<bam::ba_status>(e, bam::de_ba_status, "ba_status");
       register_bam_event<bam::kpi_status>(e, bam::de_kpi_status, "kpi_status");
       register_bam_event<bam::kpi_event>(e, bam::de_kpi_event, "kpi_event");
@@ -170,6 +174,8 @@ void broker_module_init(void const* arg) {
       e.register_event(bam::pb_dimension_truncate_table_signal::static_type(),
                        "DimensionTruncateTableSignal",
                        &bam::pb_dimension_truncate_table_signal::operations);
+      e.register_event(bam::pb_services_book_state::static_type(), "BaState",
+                       &bam::pb_services_book_state::operations);
       /* Let's register the ba_info event to be sure it is declared in case
        * brokerrpc is not already instanciated. */
       e.register_event(make_type(io::extcmd, extcmd::de_ba_info), "ba_info",

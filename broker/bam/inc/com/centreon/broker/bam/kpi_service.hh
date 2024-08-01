@@ -1,4 +1,4 @@
-/*
+/**
  * Copyright 2014-2015, 2021-2023 Centreon
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,9 +27,7 @@
 #include "com/centreon/broker/io/stream.hh"
 #include "com/centreon/broker/timestamp.hh"
 
-namespace com::centreon::broker {
-
-namespace bam {
+namespace com::centreon::broker::bam {
 /**
  *  @class kpi_service kpi_service.hh "com/centreon/broker/bam/kpi_service.hh"
  *  @brief Service as a KPI.
@@ -61,7 +59,8 @@ class kpi_service : public service_listener, public kpi {
               uint32_t ba_id,
               uint32_t host_id,
               uint32_t service_id,
-              const std::string& host_serv);
+              const std::string& host_serv,
+              const std::shared_ptr<spdlog::logger>& logger);
   ~kpi_service() noexcept = default;
   kpi_service(const kpi_service&) = delete;
   kpi_service& operator=(const kpi_service&) = delete;
@@ -77,6 +76,7 @@ class kpi_service : public service_listener, public kpi {
   void impact_soft(impact_values& impact) override;
   bool in_downtime() const override;
   bool is_acknowledged() const;
+  void service_update(const service_state& state) override;
   void service_update(std::shared_ptr<neb::service_status> const& status,
                       io::stream* visitor = nullptr) override;
   void service_update(const std::shared_ptr<neb::pb_service>& status,
@@ -106,8 +106,6 @@ class kpi_service : public service_listener, public kpi {
   std::string object_info() const override;
   void dump(std::ofstream& output) const override;
 };
-}  // namespace bam
-
-}  // namespace com::centreon::broker
+}  // namespace com::centreon::broker::bam
 
 #endif  // !CCB_BAM_KPI_SERVICE_HH

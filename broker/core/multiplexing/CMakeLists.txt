@@ -28,13 +28,18 @@ set(SOURCES ${SRC_DIR}/engine.cc ${SRC_DIR}/muxer.cc ${SRC_DIR}/publisher.cc)
 
 # Static libraries.
 add_library(multiplexing STATIC ${SOURCES})
+add_dependencies(multiplexing pb_bbdo_lib pb_extcmd_lib)
+
 set_target_properties(multiplexing PROPERTIES COMPILE_FLAGS "-fPIC")
 target_precompile_headers(multiplexing PRIVATE ../precomp_inc/precomp.hpp)
-target_link_libraries(multiplexing CONAN_PKG::spdlog)
+target_link_libraries(multiplexing spdlog::spdlog)
 
 if(WITH_TESTING)
   set(TESTS_SOURCES
-      ${TESTS_SOURCES} ${TESTS_DIR}/engine/start_stop.cc
-      ${TESTS_DIR}/muxer/muxer_filter.cc ${TESTS_DIR}/muxer/read.cc
-      ${TESTS_DIR}/publisher/read.cc ${TESTS_DIR}/publisher/write.cc)
+      ${TESTS_SOURCES}
+      ${TESTS_DIR}/engine/start_stop.cc
+      ${TESTS_DIR}/muxer/read.cc
+      ${TESTS_DIR}/publisher/read.cc
+      ${TESTS_DIR}/publisher/write.cc
+      PARENT_SCOPE)
 endif(WITH_TESTING)

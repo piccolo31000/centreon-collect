@@ -1,25 +1,24 @@
 /**
-* Copyright 2014-2015, 2021 Centreon
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* For more information : contact@centreon.com
-*/
+ * Copyright 2014-2015, 2021-2024 Centreon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For more information : contact@centreon.com
+ */
 
 #include "com/centreon/broker/bam/kpi.hh"
 
 #include "com/centreon/broker/bam/ba.hh"
-#include "com/centreon/broker/log_v2.hh"
 
 using namespace com::centreon::broker;
 using namespace com::centreon::broker::bam;
@@ -29,8 +28,11 @@ static constexpr double eps = 0.000001;
 /**
  *  Constructor.
  */
-kpi::kpi(uint32_t kpi_id, uint32_t ba_id, const std::string& name)
-    : _id(kpi_id), _ba_id(ba_id), _name(name) {}
+kpi::kpi(uint32_t kpi_id,
+         uint32_t ba_id,
+         const std::string& name,
+         const std::shared_ptr<spdlog::logger>& logger)
+    : computable(logger), _id(kpi_id), _ba_id(ba_id), _name(name) {}
 
 /**
  *  Get KPI ID.
@@ -65,7 +67,7 @@ timestamp kpi::get_last_state_change() const {
  *  @param[in] e  The kpi event.
  */
 void kpi::set_initial_event(const KpiEvent& e) {
-  log_v2::bam()->trace("bam: kpi::set_initial_event");
+  _logger->trace("bam: kpi::set_initial_event");
   if (!_event) {
     _event = e;
     impact_values impacts;

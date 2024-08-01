@@ -1,5 +1,5 @@
 /**
- * Copyright 2014-2023 Centreon
+ * Copyright 2014-2024 Centreon
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@
  */
 
 #include "com/centreon/broker/bam/configuration/applier/state.hh"
-#include <fmt/format.h>
+
+#include "com/centreon/broker/bam/internal.hh"
+
 #include "com/centreon/broker/bam/exp_builder.hh"
-#include "com/centreon/broker/bam/exp_parser.hh"
-#include "com/centreon/exceptions/msg_fmt.hh"
 
 using namespace com::centreon::exceptions;
 using namespace com::centreon::broker;
@@ -72,14 +72,16 @@ static std::string service_node_id(uint32_t host_id, uint32_t service_id) {
 }
 
 /**
- *  Default constructor.
+ * @brief Constructor
+ *
+ * @param logger The logger to use with this class.
  */
-applier::state::state() {}
-
-/**
- *  Destructor.
- */
-applier::state::~state() {}
+applier::state::state(const std::shared_ptr<spdlog::logger>& logger)
+    : _logger{logger},
+      _ba_applier(_logger),
+      _book_service(_logger),
+      _kpi_applier(_logger),
+      _bool_exp_applier(_logger) {}
 
 /**
  *  Apply configuration.
@@ -157,7 +159,8 @@ void applier::state::_circular_check(configuration::state const& my_state) {
     _nodes[bool_id];
     try {
       exp_parser parsr(it->second.get_expression());
-      exp_builder buildr(parsr.get_postfix(), my_state.get_hst_svc_mapping());
+      exp_builder buildr(parsr.get_postfix(), my_state.get_hst_svc_mapping(),
+                         _logger);
       for (std::list<bool_service::ptr>::const_iterator
                it_svc(buildr.get_services().begin()),
            end_svc(buildr.get_services().end());
@@ -233,7 +236,12 @@ void applier::state::_circular_check(applier::state::circular_check_node& n) {
  *  @param[in] cache  The cache.
  */
 void applier::state::save_to_cache(persistent_cache& cache) {
+  _logger->trace("BAM: Saving states to cache");
+  cache.transaction();
+  _book_service.save_to_cache(cache);
   _ba_applier.save_to_cache(cache);
+  cache.commit();
+  _logger->trace("BAM: States correctly saved");
 }
 
 /**
@@ -242,7 +250,31 @@ void applier::state::save_to_cache(persistent_cache& cache) {
  *  @param[in] cache  the cache.
  */
 void applier::state::load_from_cache(persistent_cache& cache) {
-  _ba_applier.load_from_cache(cache);
+  _logger->debug("BAM: Loading restoring inherited downtimes and BA states");
+
+  std::shared_ptr<io::data> d;
+  cache.get(d);
+  while (d) {
+    switch (d->type()) {
+      case inherited_downtime::static_type(): {
+        const inherited_downtime& dwn =
+            *std::static_pointer_cast<const inherited_downtime>(d);
+        _ba_applier.apply_inherited_downtime(dwn);
+      } break;
+      case pb_inherited_downtime::static_type(): {
+        const pb_inherited_downtime& dwn =
+            *std::static_pointer_cast<const pb_inherited_downtime>(d);
+        _ba_applier.apply_inherited_downtime(dwn);
+      } break;
+      case pb_services_book_state::static_type(): {
+        const ServicesBookState& state =
+            std::static_pointer_cast<const pb_services_book_state>(d)->obj();
+        _book_service.apply_services_state(state);
+      } break;
+    }
+    cache.get(d);
+  }
+  _logger->debug("BAM: Inherited downtimes and BA states restored");
 }
 
 /**

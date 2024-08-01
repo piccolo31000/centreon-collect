@@ -26,7 +26,6 @@
 #include "com/centreon/broker/bam/impact_values.hh"
 #include "com/centreon/broker/bam/kpi.hh"
 #include "com/centreon/broker/config/applier/state.hh"
-#include "com/centreon/broker/log_v2.hh"
 #include "com/centreon/broker/neb/downtime.hh"
 #include "com/centreon/broker/neb/service_status.hh"
 
@@ -38,22 +37,25 @@ static constexpr double eps = 0.000001;
 /**
  *  Constructor.
  *
+ *  @param[in] id the id of this ba.
  *  @param[in] host_id the id of the associated host.
  *  @param[in] service_id the id of the associated service.
- *  @param[in] id the id of this ba.
  *  @param[in] generate_virtual_status  Whether or not the BA object
  *                                      should generate statuses of
  *                                      virtual hosts and services.
+ *  @param[in] logger The logger to use in this BA.
  */
 ba_ratio_number::ba_ratio_number(uint32_t id,
                                  uint32_t host_id,
                                  uint32_t service_id,
-                                 bool generate_virtual_status)
+                                 bool generate_virtual_status,
+                                 const std::shared_ptr<spdlog::logger>& logger)
     : ba(id,
          host_id,
          service_id,
          configuration::ba::state_source_ratio_number,
-         generate_virtual_status) {
+         generate_virtual_status,
+         logger) {
   _level_hard = _level_soft = 0;
 }
 
@@ -187,4 +189,31 @@ std::string ba_ratio_number::get_perfdata() const {
   return fmt::format("BA_Level={};{};{};0;{}", static_cast<int>(_level_hard),
                      static_cast<int>(_level_warning),
                      static_cast<int>(_level_critical), _impacts.size());
+}
+
+std::shared_ptr<pb_ba_status> ba_ratio_number::_generate_ba_status(
+    bool state_changed) const {
+  auto ret = std::make_shared<pb_ba_status>();
+  BaStatus& status = ret->mut_obj();
+  status.set_ba_id(get_id());
+  status.set_in_downtime(in_downtime());
+  if (_event)
+    status.set_last_state_change(_event->obj().start_time());
+  else
+    status.set_last_state_change(get_last_kpi_update());
+  status.set_level_nominal(_normalize(_level_hard));
+  status.set_state(com::centreon::broker::State(get_state_hard()));
+  status.set_state_changed(state_changed);
+  std::string perfdata = get_perfdata();
+  if (perfdata.empty())
+    status.set_output(get_output());
+  else
+    status.set_output(get_output() + "|" + perfdata);
+
+  SPDLOG_LOGGER_DEBUG(_logger,
+                      "BAM: generating status of ratio number BA {} '{}' "
+                      "(state {}, in downtime {}, level {})",
+                      get_id(), _name, status.state(), status.in_downtime(),
+                      status.level_nominal());
+  return ret;
 }

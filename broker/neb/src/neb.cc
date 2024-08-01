@@ -1,37 +1,44 @@
 /**
-* Copyright 2009-2016, 2018-2021 Centreon
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* For more information : contact@centreon.com
-*/
+ * Copyright 2009-2016, 2018-2024 Centreon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For more information : contact@centreon.com
+ */
 
 #include <clocale>
 #include <csignal>
+
 #include "com/centreon/broker/config/applier/init.hh"
 #include "com/centreon/broker/config/applier/state.hh"
 #include "com/centreon/broker/config/parser.hh"
-#include "com/centreon/broker/log_v2.hh"
 #include "com/centreon/broker/neb/callbacks.hh"
 #include "com/centreon/broker/neb/instance_configuration.hh"
 #include "com/centreon/engine/nebcallbacks.hh"
 #include "com/centreon/exceptions/msg_fmt.hh"
+#include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon::broker;
 using namespace com::centreon::exceptions;
+using com::centreon::common::log_v2::log_v2;
 
 // Specify the event broker API version.
 NEB_API_VERSION(CURRENT_NEB_API_VERSION)
+
+namespace com::centreon::broker {
+std::shared_ptr<spdlog::logger> neb_logger =
+    log_v2::instance().get(log_v2::NEB);
+}  // namespace com::centreon::broker
 
 extern std::shared_ptr<asio::io_context> g_io_context;
 
@@ -56,9 +63,6 @@ int nebmodule_deinit(int flags, int reason) {
     // Unregister callbacks.
     neb::unregister_callbacks();
 
-    // Unload singletons.
-    log_v2::instance()
-        ->stop_flush_timer();  // beware at the order of these two calls
     com::centreon::broker::config::applier::deinit();
   }
   // Avoid exception propagation in C code.
@@ -84,6 +88,8 @@ int nebmodule_deinit(int flags, int reason) {
  *  @return 0 on success, any other value on failure.
  */
 int nebmodule_init(int flags, char const* args, void* handle) {
+  neb_logger = log_v2::instance().get(log_v2::NEB);
+
   try {
     // Save module handle and flags for future use.
     neb::gl_mod_flags = flags;
@@ -113,7 +119,6 @@ int nebmodule_init(int flags, char const* args, void* handle) {
     setlocale(LC_NUMERIC, "C");
 
     try {
-      log_v2::load(g_io_context);
       // Set configuration file.
       if (args) {
         char const* config_file("config_file=");
@@ -130,11 +135,14 @@ int nebmodule_init(int flags, char const* args, void* handle) {
           p.parse(neb::gl_configuration_file)};
 
       // Initialization.
+      /* This is a little hack to avoid to replace the log file set by
+       * centengine */
+      s.mut_log_conf().allow_only_atomic_changes(true);
       com::centreon::broker::config::applier::init(s);
       try {
-        log_v2::instance()->apply(s);
+        log_v2::instance().apply(s.log_conf());
       } catch (const std::exception& e) {
-        log_v2::core()->error("main: {}", e.what());
+        log_v2::instance().get(log_v2::CORE)->error("main: {}", e.what());
       }
 
       com::centreon::broker::config::applier::state::instance().apply(s);
@@ -159,20 +167,25 @@ int nebmodule_init(int flags, char const* args, void* handle) {
                 NEBCALLBACK_LOG_DATA, neb::gl_mod_handle, &neb::callback_log));
       }
     } catch (std::exception const& e) {
-      log_v2::core()->error("main: {}", e.what());
+      log_v2::instance().get(log_v2::CORE)->error("main: {}", e.what());
       return -1;
     } catch (...) {
-      log_v2::core()->error("main: configuration file parsing failed");
+      log_v2::instance()
+          .get(log_v2::CORE)
+          ->error("main: configuration file parsing failed");
       return -1;
     }
 
   } catch (std::exception const& e) {
-    log_v2::core()->error("main: cbmod loading failed: {}", e.what());
+    log_v2::instance()
+        .get(log_v2::CORE)
+        ->error("main: cbmod loading failed: {}", e.what());
     nebmodule_deinit(0, 0);
     return -1;
   } catch (...) {
-    log_v2::core()->error(
-        "main: cbmod loading failed due to an unknown exception");
+    log_v2::instance()
+        .get(log_v2::CORE)
+        ->error("main: cbmod loading failed due to an unknown exception");
     nebmodule_deinit(0, 0);
     return -1;
   }
@@ -183,18 +196,24 @@ int nebmodule_init(int flags, char const* args, void* handle) {
 /**
  *  @brief Reload module after configuration reload.
  *
- *  This will effectively send an instance_configuration object to the
- *  multiplexer.
- *
  *  @return OK.
  */
 int nebmodule_reload() {
-  std::shared_ptr<neb::instance_configuration> ic(
-      new neb::instance_configuration);
-  ic->loaded = true;
-  ic->poller_id = config::applier::state::instance().poller_id();
   multiplexing::publisher p;
-  p.write(ic);
+  if (com::centreon::broker::config::applier::state::instance()
+          .get_bbdo_version()
+          .major_v > 2) {
+    auto ic = std::make_shared<neb::pb_instance_configuration>();
+    ic->mut_obj().set_loaded(true);
+    ic->mut_obj().set_poller_id(config::applier::state::instance().poller_id());
+    p.write(ic);
+  } else {
+    std::shared_ptr<neb::instance_configuration> ic(
+        new neb::instance_configuration);
+    ic->loaded = true;
+    ic->poller_id = config::applier::state::instance().poller_id();
+    p.write(ic);
+  }
   return 0;
 }
 }

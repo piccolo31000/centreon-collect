@@ -1,20 +1,20 @@
 /**
-* Copyright 2018-2021 Centreon
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* For more information : contact@centreon.com
-*/
+ * Copyright 2018-2021 Centreon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * For more information : contact@centreon.com
+ */
 
 #include "com/centreon/broker/lua/broker_utils.hh"
 
@@ -34,15 +34,21 @@
 #include "com/centreon/broker/io/data.hh"
 #include "com/centreon/broker/io/events.hh"
 #include "com/centreon/broker/io/protobuf.hh"
-#include "com/centreon/broker/log_v2.hh"
 #include "com/centreon/broker/mapping/entry.hh"
 #include "com/centreon/broker/misc/misc.hh"
+#include "com/centreon/broker/misc/string.hh"
+#include "com/centreon/broker/sql/table_max_size.hh"
+#include "com/centreon/common/hex_dump.hh"
+#include "com/centreon/common/perfdata.hh"
+#include "com/centreon/common/utf8.hh"
 #include "com/centreon/exceptions/msg_fmt.hh"
+#include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon::broker;
 using namespace com::centreon::broker::lua;
 using namespace com::centreon::exceptions;
 using namespace nlohmann;
+using com::centreon::common::log_v2::log_v2;
 
 static void broker_json_encode(lua_State* L, std::ostringstream& oss);
 static void broker_json_decode(lua_State* L, const json& it);
@@ -189,6 +195,7 @@ static void _message_to_json(std::ostringstream& oss,
           }
           oss << ']';
           break;
+        case google::protobuf::FieldDescriptor::TYPE_SFIXED64:
         case google::protobuf::FieldDescriptor::TYPE_INT64:
           oss << fmt::format("\"{}\":[", entry_name);
           for (size_t j = 0; j < s; j++) {
@@ -198,6 +205,7 @@ static void _message_to_json(std::ostringstream& oss,
           }
           oss << ']';
           break;
+        case google::protobuf::FieldDescriptor::TYPE_FIXED64:
         case google::protobuf::FieldDescriptor::TYPE_UINT64:
           oss << fmt::format("\"{}\":[", entry_name);
           for (size_t j = 0; j < s; j++) {
@@ -237,10 +245,20 @@ static void _message_to_json(std::ostringstream& oss,
           }
           oss << ']';
           break;
+        case google::protobuf::FieldDescriptor::TYPE_BYTES:
+          oss << fmt::format("\"{}\":[", entry_name);
+          for (size_t j = 0; j < s; j++) {
+            if (j > 0)
+              oss << ',';
+            tmpl = refl->GetRepeatedStringReference(*p, f, j, &tmpl);
+            oss << '"' << com::centreon::common::hex_dump(tmpl, 0) << '"';
+          }
+          oss << ']';
+          break;
         default:  // Error, a type not handled
           throw msg_fmt(
               "protobuf {} type ID is not handled in the broker json converter",
-              f->type());
+              static_cast<uint32_t>(f->type()));
       }
     } else {
       if (i > 0)
@@ -258,9 +276,11 @@ static void _message_to_json(std::ostringstream& oss,
         case google::protobuf::FieldDescriptor::TYPE_UINT32:
           oss << fmt::format("\"{}\":{}", entry_name, refl->GetUInt32(*p, f));
           break;
+        case google::protobuf::FieldDescriptor::TYPE_SFIXED64:
         case google::protobuf::FieldDescriptor::TYPE_INT64:
           oss << fmt::format("\"{}\":{}", entry_name, refl->GetInt64(*p, f));
           break;
+        case google::protobuf::FieldDescriptor::TYPE_FIXED64:
         case google::protobuf::FieldDescriptor::TYPE_UINT64:
           oss << fmt::format("\"{}\":{}", entry_name, refl->GetUInt64(*p, f));
           break;
@@ -277,10 +297,15 @@ static void _message_to_json(std::ostringstream& oss,
           _message_to_json(oss, &refl->GetMessage(*p, f));
           oss << '}';
           break;
+        case google::protobuf::FieldDescriptor::TYPE_BYTES:
+          tmpl = refl->GetStringReference(*p, f, &tmpl);
+          oss << fmt::format(R"("{}":"{}")", entry_name,
+                             com::centreon::common::hex_dump(tmpl, 0));
+          break;
         default:  // Error, a type not handled
           throw msg_fmt(
               "protobuf {} type ID is not handled in the broker json converter",
-              f->type());
+              static_cast<uint32_t>(f->type()));
       }
     }
   }
@@ -470,7 +495,8 @@ static int l_broker_json_encode(lua_State* L) noexcept {
     lua_pushlstring(L, s.c_str(), s.size());
     return 1;
   } catch (const std::exception& e) {
-    log_v2::lua()->error("lua: json_encode encountered an error: {}", e.what());
+    auto logger = log_v2::instance().get(log_v2::LUA);
+    logger->error("lua: json_encode encountered an error: {}", e.what());
   }
   return 0;
 }
@@ -624,9 +650,18 @@ static auto l_stacktrace = [](lua_State* L) -> void {
 static int l_broker_parse_perfdata(lua_State* L) {
   char const* perf_data(lua_tostring(L, 1));
   int full(lua_toboolean(L, 2));
-  std::list<misc::perfdata> pds{misc::parse_perfdata(0, 0, perf_data)};
+  auto logger = log_v2::instance().get(log_v2::LUA);
+  std::list<com::centreon::common::perfdata> pds{
+      com::centreon::common::perfdata::parse_perfdata(0, 0, perf_data, logger)};
   lua_createtable(L, 0, pds.size());
-  for (auto const& pd : pds) {
+  for (auto& pd : pds) {
+    pd.resize_name(com::centreon::common::adjust_size_utf8(
+        pd.name(), get_centreon_storage_metrics_col_size(
+                       centreon_storage_metrics_metric_name)));
+    pd.resize_unit(com::centreon::common::adjust_size_utf8(
+        pd.unit(), get_centreon_storage_metrics_col_size(
+                       centreon_storage_metrics_unit_name)));
+
     lua_pushlstring(L, pd.name().c_str(), pd.name().size());
     if (full) {
       std::string_view name{pd.name()};

@@ -17,7 +17,6 @@
  */
 
 #include "com/centreon/broker/bam/bool_equal.hh"
-#include "com/centreon/broker/log_v2.hh"
 
 #include <cmath>
 
@@ -33,7 +32,6 @@ double bool_equal::value_hard() const {
   if (state_known())
     retval = std::fabs(_left_hard - _right_hard) < COMPARE_EPSILON;
 
-  log_v2::bam()->trace("BAM: bool_equal: value as double: {}", retval);
   return retval;
 }
 
@@ -47,7 +45,6 @@ bool bool_equal::boolean_value() const {
   if (state_known())
     retval = std::fabs(_left_hard - _right_hard) < COMPARE_EPSILON;
 
-  log_v2::bam()->trace("BAM: bool_equal: value: {}", retval);
   return retval;
 }
 

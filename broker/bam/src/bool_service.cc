@@ -1,5 +1,5 @@
 /**
- * Copyright 2014, 2021-2023 Centreon
+ * Copyright 2014, 2021-2024 Centreon
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,17 +20,25 @@
 
 #include "com/centreon/broker/bam/bool_service.hh"
 
-#include "com/centreon/broker/log_v2.hh"
+#include "bbdo/bam/state.hh"
+#include "com/centreon/broker/bam/service_state.hh"
 #include "com/centreon/broker/neb/service_status.hh"
 
 using namespace com::centreon::broker;
 using namespace com::centreon::broker::bam;
 
 /**
- *  Default constructor.
+ * @brief Constructor
+ *
+ * @param host_id The host ID of the service.
+ * @param service_id The service ID of the service.
+ * @param logger The logger to use.
  */
-bool_service::bool_service(uint32_t host_id, uint32_t service_id)
-    : _host_id(host_id),
+bool_service::bool_service(uint32_t host_id,
+                           uint32_t service_id,
+                           const std::shared_ptr<spdlog::logger>& logger)
+    : bool_value(logger),
+      _host_id(host_id),
       _service_id(service_id),
       _state_hard(0),
       _state_known(false),
@@ -55,15 +63,39 @@ uint32_t bool_service::get_service_id() const {
 }
 
 /**
+ * @brief When the cache is restored, this method is used to update services in
+ * BAs. It works as others service_update() methods, except no visitor is
+ * needed here.
+ *
+ * @param s The service_state to apply.
+ */
+void bool_service::service_update(const service_state& s) {
+  // Update information.
+  _logger->debug("BAM: bool_service updated with service state {}", s);
+  bool changed =
+      _state_hard != static_cast<state>(s.last_hard_state) || !_state_known;
+
+  _state_hard = static_cast<short>(s.last_hard_state);
+  _logger->debug("BAM: bool_service ({},{}) state hard set to {}", s.host_id,
+                 s.service_id, _state_hard);
+  if (_state_hard != state_unknown)
+    _state_known = true;
+
+  // Propagate change.
+  if (changed)
+    notify_parents_of_change(nullptr);
+}
+
+/**
  *  Notify of service update.
  *
  *  @param[in]  status   Service status.
  *  @param[out] visitor  Object that will receive events.
  */
 void bool_service::service_update(
-    std::shared_ptr<neb::service_status> const& status,
+    const std::shared_ptr<neb::service_status>& status,
     io::stream* visitor) {
-  SPDLOG_LOGGER_TRACE(log_v2::bam(),
+  SPDLOG_LOGGER_TRACE(_logger,
                       "bool_service: service update with neb::service_status");
   if (status && status->host_id == _host_id &&
       status->service_id == _service_id) {
@@ -88,7 +120,7 @@ void bool_service::service_update(
 void bool_service::service_update(const std::shared_ptr<neb::pb_service>& svc,
                                   io::stream* visitor) {
   auto& o = svc->obj();
-  SPDLOG_LOGGER_TRACE(log_v2::bam(),
+  SPDLOG_LOGGER_TRACE(_logger,
                       "bool_service: service ({},{}) updated with "
                       "neb::pb_service hard state: {}, downtime: {}",
                       o.host_id(), o.service_id(), o.last_hard_state(),
@@ -101,7 +133,7 @@ void bool_service::service_update(const std::shared_ptr<neb::pb_service>& svc,
       _state_hard = o.last_hard_state();
       _state_known = true;
       _in_downtime = new_in_downtime;
-      log_v2::bam()->trace("bool_service: updated with state: {}", _state_hard);
+      _logger->trace("bool_service: updated with state: {}", _state_hard);
       notify_parents_of_change(visitor);
     }
   }
@@ -117,7 +149,7 @@ void bool_service::service_update(
     const std::shared_ptr<neb::pb_service_status>& status,
     io::stream* visitor) {
   auto& o = status->obj();
-  SPDLOG_LOGGER_TRACE(log_v2::bam(),
+  SPDLOG_LOGGER_TRACE(_logger,
                       "bool_service: service ({},{}) updated with "
                       "neb::pb_service_status hard state: {}, downtime: {}",
                       o.host_id(), o.service_id(), o.last_hard_state(),
@@ -129,7 +161,7 @@ void bool_service::service_update(
       _state_hard = o.last_hard_state();
       _state_known = true;
       _in_downtime = new_in_downtime;
-      log_v2::bam()->trace("bool_service: updated with state: {}", _state_hard);
+      _logger->trace("bool_service: updated with state: {}", _state_hard);
       notify_parents_of_change(visitor);
     }
   }
@@ -159,7 +191,6 @@ bool bool_service::boolean_value() const {
  *  @return  True if the state is known.
  */
 bool bool_service::state_known() const {
-  log_v2::bam()->trace("BAM: bool_service::state_known: {}", _state_known);
   return _state_known;
 }
 
@@ -180,7 +211,7 @@ bool bool_service::in_downtime() const {
  */
 void bool_service::update_from(computable* child [[maybe_unused]],
                                io::stream* visitor) {
-  log_v2::bam()->trace("bool_service::update_from");
+  _logger->trace("bool_service::update_from");
   notify_parents_of_change(visitor);
 }
 
