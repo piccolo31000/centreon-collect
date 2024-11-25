@@ -19,6 +19,7 @@
 #include "streaming_client.hh"
 #include "check_exec.hh"
 #include "com/centreon/common/defer.hh"
+#include "version.hh"
 
 using namespace com::centreon::agent;
 
@@ -118,7 +119,7 @@ void streaming_client::_start() {
           parent->_send(request);
         }
       },
-      check_exec::load);
+      scheduler::default_check_builder);
   _create_reactor();
 }
 
@@ -145,10 +146,9 @@ void streaming_client::_create_reactor() {
       std::make_shared<MessageFromAgent>();
   auto infos = who_i_am->mutable_init();
 
-  infos->mutable_centreon_version()->set_major(COLLECT_MAJOR);
-  infos->mutable_centreon_version()->set_minor(COLLECT_MINOR);
-  infos->mutable_centreon_version()->set_patch(COLLECT_PATCH);
-
+  infos->mutable_centreon_version()->set_major(CENTREON_AGENT_VERSION_MAJOR);
+  infos->mutable_centreon_version()->set_minor(CENTREON_AGENT_VERSION_MINOR);
+  infos->mutable_centreon_version()->set_patch(CENTREON_AGENT_VERSION_PATCH);
   infos->set_host(_supervised_host);
 
   _reactor->write(who_i_am);
@@ -191,7 +191,7 @@ void streaming_client::_send(const std::shared_ptr<MessageFromAgent>& request) {
  * @param request
  */
 void streaming_client::on_incomming_request(
-    const std::shared_ptr<client_reactor>& caller,
+    const std::shared_ptr<client_reactor>& caller [[maybe_unused]],
     const std::shared_ptr<MessageToAgent>& request) {
   // incoming request is used in main thread
   _io_context->post([request, sched = _sched]() { sched->update(request); });

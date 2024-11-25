@@ -22,8 +22,6 @@
 #define CCE_NEBSTRUCTS_HH
 
 #include "com/centreon/engine/comment.hh"
-#include "com/centreon/engine/host.hh"
-#include "com/centreon/engine/service.hh"
 
 /* Acknowledgement structure. */
 typedef struct nebstruct_acknowledgement_struct {
@@ -95,10 +93,10 @@ typedef struct nebstruct_comment_struct {
 /* Custom variable structure. */
 typedef struct nebstruct_custom_variable_struct {
   int type;
-  struct timeval timestamp;
-  char* var_name;
-  char* var_value;
-  void* object_ptr;
+  struct timeval timestamp = {};
+  std::string_view var_name;
+  std::string_view var_value;
+  void* object_ptr = nullptr;
 } nebstruct_custom_variable_data;
 
 /* Downtime data structure. */
@@ -187,6 +185,7 @@ typedef struct nebstruct_host_check_struct {
 typedef struct nebstruct_host_status_struct {
   int type;
   void* object_ptr;
+  uint32_t attributes;
 } nebstruct_host_status_data;
 
 /* Log data structure. */
@@ -248,6 +247,7 @@ typedef struct nebstruct_service_check_struct {
 typedef struct nebstruct_service_status_struct {
   int type;
   void* object_ptr;
+  uint32_t attributes;
 } nebstruct_service_status_data;
 
 typedef struct nebstruct_bench_struct {

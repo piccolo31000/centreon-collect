@@ -18,6 +18,8 @@
 
 #include <gtest/gtest.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <chrono>
+#include <thread>
 
 #include "com/centreon/common/process/process.hh"
 
@@ -25,9 +27,11 @@ using namespace com::centreon::common;
 
 #ifdef _WINDOWS
 #define ECHO_PATH "tests\\echo.bat"
+#define SLEEP_PATH "tests\\sleep.bat"
 #define END_OF_LINE "\r\n"
 #else
 #define ECHO_PATH "/bin/echo"
+#define SLEEP_PATH "/bin/sleep"
 #define END_OF_LINE "\n"
 #endif
 
@@ -44,7 +48,8 @@ class process_test : public ::testing::Test {
   }
 };
 
-class process_wait : public process {
+class process_wait : public process<> {
+  std::mutex _cond_m;
   std::condition_variable _cond;
   std::string _stdout;
   std::string _stderr;
@@ -52,13 +57,14 @@ class process_wait : public process {
   bool _stderr_eof = false;
   bool _process_ended = false;
 
-  void _notify() {
-    if (_stdout_eof && _stderr_eof && _process_ended) {
-      _cond.notify_one();
-    }
+ public:
+  void reset_end() {
+    std::lock_guard l(_cond_m);
+    _stdout_eof = false;
+    _stderr_eof = false;
+    _process_ended = false;
   }
 
- public:
   void on_stdout_read(const boost::system::error_code& err,
                       size_t nb_read) override {
     if (!err) {
@@ -66,8 +72,10 @@ class process_wait : public process {
       _stdout += line;
       SPDLOG_LOGGER_DEBUG(_logger, "read from stdout: {}", line);
     } else if (err == asio::error::eof || err == asio::error::broken_pipe) {
+      std::unique_lock l(_cond_m);
       _stdout_eof = true;
-      _notify();
+      l.unlock();
+      _cond.notify_one();
     }
     process::on_stdout_read(err, nb_read);
   }
@@ -79,8 +87,10 @@ class process_wait : public process {
       _stderr += line;
       SPDLOG_LOGGER_DEBUG(_logger, "read from stderr: {}", line);
     } else if (err == asio::error::eof || err == asio::error::broken_pipe) {
+      std::unique_lock l(_cond_m);
       _stderr_eof = true;
-      _notify();
+      l.unlock();
+      _cond.notify_one();
     }
     process::on_stderr_read(err, nb_read);
   }
@@ -89,8 +99,10 @@ class process_wait : public process {
                       int raw_exit_status) override {
     process::on_process_end(err, raw_exit_status);
     SPDLOG_LOGGER_DEBUG(_logger, "process end");
+    std::unique_lock l(_cond_m);
     _process_ended = true;
-    _notify();
+    l.unlock();
+    _cond.notify_one();
   }
 
   template <typename string_type>
@@ -109,9 +121,9 @@ class process_wait : public process {
   const std::string& get_stderr() const { return _stderr; }
 
   void wait() {
-    std::mutex dummy;
-    std::unique_lock l(dummy);
-    _cond.wait(l);
+    std::unique_lock l(_cond_m);
+    _cond.wait(l,
+               [this] { return _process_ended && _stderr_eof && _stdout_eof; });
   }
 };
 
@@ -154,11 +166,11 @@ TEST_F(process_test, call_start_several_time) {
       new process_wait(g_io_context, _logger, ECHO_PATH, {"hello"}));
   std::string expected;
   for (int ii = 0; ii < 10; ++ii) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    to_wait->reset_end();
     to_wait->start_process(true);
+    to_wait->wait();
     expected += "hello" END_OF_LINE;
   }
-  to_wait->wait();
   ASSERT_EQ(to_wait->get_exit_status(), 0);
   ASSERT_EQ(to_wait->get_stdout(), expected);
   ASSERT_EQ(to_wait->get_stderr(), "");
@@ -169,11 +181,11 @@ TEST_F(process_test, call_start_several_time_no_args) {
       new process_wait(g_io_context, _logger, ECHO_PATH " hello"));
   std::string expected;
   for (int ii = 0; ii < 10; ++ii) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    to_wait->reset_end();
     to_wait->start_process(true);
+    to_wait->wait();
     expected += "hello" END_OF_LINE;
   }
-  to_wait->wait();
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
   ASSERT_EQ(to_wait->get_exit_status(), 0);
   ASSERT_EQ(to_wait->get_stdout(), expected);
@@ -225,3 +237,27 @@ TEST_F(process_test, shell_stdin_to_stdout) {
 }
 
 #endif
+
+TEST_F(process_test, kill_process) {
+  std::shared_ptr<process_wait> to_wait(
+      new process_wait(g_io_context, _logger, SLEEP_PATH, {"10"}));
+  to_wait->start_process(true);
+
+  // wait process starts
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  int pid = to_wait->get_pid();
+  // kill process
+  to_wait->kill();
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+#ifdef _WINDOWS
+  auto process_handle =
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  ASSERT_NE(process_handle, nullptr);
+  DWORD exit_code;
+  ASSERT_EQ(GetExitCodeProcess(process_handle, &exit_code), TRUE);
+  ASSERT_NE(exit_code, STILL_ACTIVE);
+  CloseHandle(process_handle);
+#else
+  ASSERT_EQ(kill(pid, 0), -1);
+#endif
+}

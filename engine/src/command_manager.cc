@@ -83,8 +83,13 @@ int command_manager::process_passive_service_check(
 
   /* skip this service check result if we aren't accepting passive service
    * checks */
+#ifdef LEGACY_CONF
   if (!config->accept_passive_service_checks())
     return ERROR;
+#else
+  if (!pb_config.accept_passive_service_checks())
+    return ERROR;
+#endif
 
   /* make sure we have a reasonable return code */
   if (return_code > 3)
@@ -174,8 +179,13 @@ int command_manager::process_passive_host_check(time_t check_time,
   const std::string* real_host_name = nullptr;
 
   /* skip this host check result if we aren't accepting passive host checks */
+#ifdef LEGACY_CONF
   if (!config->accept_passive_service_checks())
     return ERROR;
+#else
+  if (!pb_config.accept_passive_service_checks())
+    return ERROR;
+#endif
 
   /* make sure we have a reasonable return code */
   if (return_code > 2)
@@ -288,12 +298,21 @@ int command_manager::get_stats(std::string const& request, Stats* response) {
     uint32_t used_external_command_buffer_slots = 0;
     uint32_t high_external_command_buffer_slots = 0;
     // get number f items in the command buffer
+#ifdef LEGACY_CONF
     if (config->check_external_commands()) {
       used_external_command_buffer_slots = external_command_buffer.size();
       high_external_command_buffer_slots = external_command_buffer.high();
     }
     response->mutable_program_status()->set_total_external_command_buffer_slots(
         config->external_command_buffer_slots());
+#else
+    if (pb_config.check_external_commands()) {
+      used_external_command_buffer_slots = external_command_buffer.size();
+      high_external_command_buffer_slots = external_command_buffer.high();
+    }
+    response->mutable_program_status()->set_total_external_command_buffer_slots(
+        pb_config.external_command_buffer_slots());
+#endif
     response->mutable_program_status()->set_used_external_command_buffer_slots(
         used_external_command_buffer_slots);
     response->mutable_program_status()->set_high_external_command_buffer_slots(
@@ -392,19 +411,17 @@ void command_manager::schedule_and_propagate_downtime(
     unsigned long triggered_by,
     unsigned long duration) {
   /* check all child hosts... */
-  for (host_map_unsafe::iterator it(temp_host->child_hosts.begin()),
-       end(temp_host->child_hosts.end());
-       it != end; ++it) {
-    if (it->second == nullptr)
+  for (const auto& [_, ptr_host] : temp_host->child_hosts) {
+    if (ptr_host == nullptr)
       continue;
     /* recurse... */
-    schedule_and_propagate_downtime(it->second, entry_time, author,
-                                    comment_data, start_time, end_time, fixed,
-                                    triggered_by, duration);
+    schedule_and_propagate_downtime(ptr_host, entry_time, author, comment_data,
+                                    start_time, end_time, fixed, triggered_by,
+                                    duration);
 
     /* schedule downtime for this host */
     downtime_manager::instance().schedule_downtime(
-        downtime::host_downtime, it->second->host_id(), 0, entry_time, author,
+        downtime::host_downtime, ptr_host->host_id(), 0, entry_time, author,
         comment_data, start_time, end_time, fixed, triggered_by, duration,
         nullptr);
   }

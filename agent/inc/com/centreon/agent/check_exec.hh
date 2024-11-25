@@ -37,7 +37,7 @@ namespace detail {
  * ensure that completion is called for the right process and not for the
  * previous one
  */
-class process : public common::process {
+class process : public common::process<false> {
   bool _process_ended;
   bool _stdout_eof;
   std::string _stdout;
@@ -54,9 +54,11 @@ class process : public common::process {
 
   void start(unsigned running_index);
 
-  void kill() { common::process::kill(); }
+  void kill() { common::process<false>::kill(); }
 
-  int get_exit_status() const { return common::process::get_exit_status(); }
+  int get_exit_status() const {
+    return common::process<false>::get_exit_status();
+  }
 
   const std::string& get_stdout() const { return _stdout; }
 
@@ -82,15 +84,15 @@ class check_exec : public check {
  protected:
   using check::completion_handler;
 
-  void _timeout_timer_handler(const boost::system::error_code& err,
-                              unsigned start_check_index) override;
+  void _on_timeout() override;
 
   void _init();
 
  public:
   check_exec(const std::shared_ptr<asio::io_context>& io_context,
              const std::shared_ptr<spdlog::logger>& logger,
-             time_point exp,
+             time_point first_start_expected,
+             duration check_interval,
              const std::string& serv,
              const std::string& cmd_name,
              const std::string& cmd_line,
@@ -100,7 +102,8 @@ class check_exec : public check {
   static std::shared_ptr<check_exec> load(
       const std::shared_ptr<asio::io_context>& io_context,
       const std::shared_ptr<spdlog::logger>& logger,
-      time_point exp,
+      time_point first_start_expected,
+      duration check_interval,
       const std::string& serv,
       const std::string& cmd_name,
       const std::string& cmd_line,
@@ -108,6 +111,8 @@ class check_exec : public check {
       check::completion_handler&& handler);
 
   void start_check(const duration& timeout) override;
+
+  int get_pid() const;
 
   void on_completion(unsigned running_index);
 };

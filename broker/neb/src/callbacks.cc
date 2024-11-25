@@ -18,42 +18,27 @@
 
 #include "com/centreon/broker/neb/callbacks.hh"
 
+#include <absl/strings/numbers.h>
 #include <absl/strings/str_split.h>
 #include <unistd.h>
-
-#include "bbdo/neb.pb.h"
-#include "opentelemetry/proto/collector/metrics/v1/metrics_service.pb.h"
 
 #include "com/centreon/broker/bbdo/internal.hh"
 #include "com/centreon/broker/config/applier/state.hh"
 #include "com/centreon/broker/config/parser.hh"
-#include "com/centreon/broker/config/state.hh"
-#include "com/centreon/broker/neb/callback.hh"
 #include "com/centreon/broker/neb/events.hh"
 #include "com/centreon/broker/neb/initial.hh"
-#include "com/centreon/broker/neb/internal.hh"
 #include "com/centreon/broker/neb/set_log_data.hh"
 #include "com/centreon/common/time.hh"
 #include "com/centreon/common/utf8.hh"
 #include "com/centreon/engine/anomalydetection.hh"
 #include "com/centreon/engine/broker.hh"
-#include "com/centreon/engine/comment.hh"
 #include "com/centreon/engine/events/loop.hh"
 #include "com/centreon/engine/globals.hh"
-#include "com/centreon/engine/hostdependency.hh"
-#include "com/centreon/engine/hostgroup.hh"
-#include "com/centreon/engine/nebcallbacks.hh"
 #include "com/centreon/engine/nebstructs.hh"
-#include "com/centreon/engine/servicedependency.hh"
-#include "com/centreon/engine/servicegroup.hh"
 #include "com/centreon/engine/severity.hh"
-#include "com/centreon/engine/tag.hh"
-#include "com/centreon/exceptions/msg_fmt.hh"
-#include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon::broker;
 using namespace com::centreon::exceptions;
-using com::centreon::common::log_v2::log_v2;
 
 // List of Nagios modules.
 extern nebmodule* neb_module_list;
@@ -120,7 +105,6 @@ static struct {
   uint32_t macro;
   int (*callback)(int, void*);
 } const gl_engine_callbacks[] = {
-    {NEBCALLBACK_ADAPTIVE_DEPENDENCY_DATA, &neb::callback_dependency},
     {NEBCALLBACK_ADAPTIVE_HOST_DATA, &neb::callback_host},
     {NEBCALLBACK_ADAPTIVE_SERVICE_DATA, &neb::callback_service},
     {NEBCALLBACK_CUSTOM_VARIABLE_DATA, &neb::callback_custom_variable},
@@ -133,7 +117,6 @@ static struct {
   uint32_t macro;
   int (*callback)(int, void*);
 } const gl_pb_engine_callbacks[] = {
-    {NEBCALLBACK_ADAPTIVE_DEPENDENCY_DATA, &neb::callback_pb_dependency},
     {NEBCALLBACK_ADAPTIVE_HOST_DATA, &neb::callback_pb_host},
     {NEBCALLBACK_ADAPTIVE_SERVICE_DATA, &neb::callback_pb_service},
     {NEBCALLBACK_CUSTOM_VARIABLE_DATA, &neb::callback_pb_custom_variable},
@@ -462,7 +445,7 @@ int neb::callback_pb_custom_variable(int, void* data) {
       std::make_shared<neb::pb_custom_variable>();
   neb::pb_custom_variable::pb_type& obj = cv->mut_obj();
   bool ok_to_send = false;
-  if (cvar && cvar->var_name && cvar->var_value) {
+  if (cvar && !cvar->var_name.empty() && !cvar->var_value.empty()) {
     // Host custom variable.
     if (NEBTYPE_HOSTCUSTOMVARIABLE_ADD == cvar->type ||
         NEBTYPE_HOSTCUSTOMVARIABLE_DELETE == cvar->type) {
@@ -482,9 +465,10 @@ int neb::callback_pb_custom_variable(int, void* data) {
             std::string value(common::check_string_utf8(cvar->var_value));
             obj.set_value(value);
             obj.set_default_value(value);
-            SPDLOG_LOGGER_DEBUG(
-                neb_logger, "callbacks: new custom variable '{}' on host {}",
-                name, host_id);
+            SPDLOG_LOGGER_DEBUG(neb_logger,
+                                "callbacks: new custom variable '{}' with "
+                                "value '{}' on host {}",
+                                name, value, host_id);
           } else {
             SPDLOG_LOGGER_DEBUG(
                 neb_logger,
@@ -566,7 +550,7 @@ int neb::callback_custom_variable(int callback_type, void* data) {
     // Input variable.
     nebstruct_custom_variable_data const* cvar(
         static_cast<nebstruct_custom_variable_data*>(data));
-    if (cvar && cvar->var_name && cvar->var_value) {
+    if (cvar && !cvar->var_name.empty() && !cvar->var_value.empty()) {
       // Host custom variable.
       if (NEBTYPE_HOSTCUSTOMVARIABLE_ADD == cvar->type) {
         engine::host* hst(static_cast<engine::host*>(cvar->object_ptr));
@@ -673,315 +657,6 @@ int neb::callback_custom_variable(int callback_type, void* data) {
   // Avoid exception propagation to C code.
   catch (...) {
   }
-  return 0;
-}
-
-/**
- *  @brief Function that process dependency data.
- *
- *  This function is called by Centreon Engine when some dependency data
- *  is available.
- *
- *  @param[in] callback_type Type of the callback
- *                           (NEBCALLBACK_ADAPTIVE_DEPENDENCY_DATA).
- *  @param[in] data          A pointer to a
- *                           nebstruct_adaptive_dependency_data
- *                           containing the dependency data.
- *
- *  @return 0 on success.
- */
-int neb::callback_dependency(int callback_type, void* data) {
-  // Log message.
-  SPDLOG_LOGGER_DEBUG(neb_logger, "callbacks: generating dependency event");
-  (void)callback_type;
-
-  try {
-    // Input variables.
-    nebstruct_adaptive_dependency_data* nsadd(
-        static_cast<nebstruct_adaptive_dependency_data*>(data));
-
-    // Host dependency.
-    if ((NEBTYPE_HOSTDEPENDENCY_ADD == nsadd->type) ||
-        (NEBTYPE_HOSTDEPENDENCY_UPDATE == nsadd->type) ||
-        (NEBTYPE_HOSTDEPENDENCY_DELETE == nsadd->type)) {
-      // Find IDs.
-      uint64_t host_id;
-      uint64_t dep_host_id;
-      engine::hostdependency* dep(
-          static_cast<engine::hostdependency*>(nsadd->object_ptr));
-      if (!dep->get_hostname().empty()) {
-        host_id = engine::get_host_id(dep->get_hostname());
-      } else {
-        SPDLOG_LOGGER_ERROR(
-            neb_logger,
-            "callbacks: dependency callback called without valid host");
-        host_id = 0;
-      }
-      if (!dep->get_dependent_hostname().empty()) {
-        dep_host_id = engine::get_host_id(dep->get_dependent_hostname());
-      } else {
-        SPDLOG_LOGGER_DEBUG(
-            neb_logger,
-            "callbacks: dependency callback called without valid dependent "
-            "host");
-        dep_host_id = 0;
-      }
-
-      // Generate service dependency event.
-      auto hst_dep{std::make_shared<host_dependency>()};
-      hst_dep->host_id = host_id;
-      hst_dep->dependent_host_id = dep_host_id;
-      hst_dep->enabled = (nsadd->type != NEBTYPE_HOSTDEPENDENCY_DELETE);
-      if (!dep->get_dependency_period().empty())
-        hst_dep->dependency_period = dep->get_dependency_period();
-      {
-        std::string options;
-        if (dep->get_fail_on_down())
-          options.append("d");
-        if (dep->get_fail_on_up())
-          options.append("o");
-        if (dep->get_fail_on_pending())
-          options.append("p");
-        if (dep->get_fail_on_unreachable())
-          options.append("u");
-        if (dep->get_dependency_type() == engine::dependency::notification)
-          hst_dep->notification_failure_options = options;
-        else if (dep->get_dependency_type() == engine::dependency::execution)
-          hst_dep->execution_failure_options = options;
-      }
-      hst_dep->inherits_parent = dep->get_inherits_parent();
-      SPDLOG_LOGGER_DEBUG(neb_logger, "callbacks: host {} depends on host {}",
-                          dep_host_id, host_id);
-
-      // Publish dependency event.
-      neb::gl_publisher.write(hst_dep);
-    }
-    // Service dependency.
-    else if ((NEBTYPE_SERVICEDEPENDENCY_ADD == nsadd->type) ||
-             (NEBTYPE_SERVICEDEPENDENCY_UPDATE == nsadd->type) ||
-             (NEBTYPE_SERVICEDEPENDENCY_DELETE == nsadd->type)) {
-      // Find IDs.
-      std::pair<uint64_t, uint64_t> ids;
-      std::pair<uint64_t, uint64_t> dep_ids;
-      engine::servicedependency* dep(
-          static_cast<engine::servicedependency*>(nsadd->object_ptr));
-      if (!dep->get_hostname().empty() &&
-          !dep->get_service_description().empty()) {
-        ids = engine::get_host_and_service_id(dep->get_hostname(),
-                                              dep->get_service_description());
-      } else {
-        SPDLOG_LOGGER_ERROR(
-            neb_logger,
-            "callbacks: dependency callback called without valid service");
-        ids.first = 0;
-        ids.second = 0;
-      }
-      if (!dep->get_dependent_hostname().empty() &&
-          !dep->get_dependent_service_description().empty()) {
-        dep_ids = engine::get_host_and_service_id(
-            dep->get_dependent_hostname(),
-            dep->get_dependent_service_description());
-      } else {
-        SPDLOG_LOGGER_ERROR(
-            neb_logger,
-            "callbacks: dependency callback called without valid dependent "
-            "service");
-        dep_ids.first = 0;
-        dep_ids.second = 0;
-      }
-
-      // Generate service dependency event.
-      auto svc_dep{std::make_shared<service_dependency>()};
-      svc_dep->host_id = ids.first;
-      svc_dep->service_id = ids.second;
-      svc_dep->dependent_host_id = dep_ids.first;
-      svc_dep->dependent_service_id = dep_ids.second;
-      svc_dep->enabled = (nsadd->type != NEBTYPE_SERVICEDEPENDENCY_DELETE);
-      if (!dep->get_dependency_period().empty())
-        svc_dep->dependency_period = dep->get_dependency_period();
-      {
-        std::string options;
-        if (dep->get_fail_on_critical())
-          options.append("c");
-        if (dep->get_fail_on_ok())
-          options.append("o");
-        if (dep->get_fail_on_pending())
-          options.append("p");
-        if (dep->get_fail_on_unknown())
-          options.append("u");
-        if (dep->get_fail_on_warning())
-          options.append("w");
-        if (dep->get_dependency_type() == engine::dependency::notification)
-          svc_dep->notification_failure_options = options;
-        else if (dep->get_dependency_type() == engine::dependency::execution)
-          svc_dep->execution_failure_options = options;
-      }
-      svc_dep->inherits_parent = dep->get_inherits_parent();
-      SPDLOG_LOGGER_DEBUG(
-          neb_logger, "callbacks: service ({}, {}) depends on service ({}, {})",
-          dep_ids.first, dep_ids.second, ids.first, ids.second);
-
-      // Publish dependency event.
-      neb::gl_publisher.write(svc_dep);
-    }
-  }
-  // Avoid exception propagation to C code.
-  catch (...) {
-  }
-
-  return 0;
-}
-
-/**
- *  @brief Function that process dependency data.
- *
- *  This function is called by Centreon Engine when some dependency data
- *  is available.
- *
- *  @param[in] callback_type Type of the callback
- *                           (NEBCALLBACK_ADAPTIVE_DEPENDENCY_DATA).
- *  @param[in] data          A pointer to a
- *                           nebstruct_adaptive_dependency_data
- *                           containing the dependency data.
- *
- *  @return 0 on success.
- */
-int neb::callback_pb_dependency(int, void* data) {
-  // Log message.
-  SPDLOG_LOGGER_DEBUG(neb_logger, "callbacks: generating dependency event");
-
-  // Input variables.
-  nebstruct_adaptive_dependency_data* nsadd(
-      static_cast<nebstruct_adaptive_dependency_data*>(data));
-
-  // Host dependency.
-  if ((NEBTYPE_HOSTDEPENDENCY_ADD == nsadd->type) ||
-      (NEBTYPE_HOSTDEPENDENCY_UPDATE == nsadd->type) ||
-      (NEBTYPE_HOSTDEPENDENCY_DELETE == nsadd->type)) {
-    // Find IDs.
-    uint64_t host_id;
-    uint64_t dep_host_id;
-
-    engine::hostdependency* dep(
-        static_cast<engine::hostdependency*>(nsadd->object_ptr));
-    if (!dep->get_hostname().empty()) {
-      host_id = engine::get_host_id(dep->get_hostname());
-    } else {
-      SPDLOG_LOGGER_ERROR(
-          neb_logger,
-          "callbacks: dependency callback called without valid host");
-      host_id = 0;
-    }
-    if (!dep->get_dependent_hostname().empty()) {
-      dep_host_id = engine::get_host_id(dep->get_dependent_hostname());
-    } else {
-      SPDLOG_LOGGER_DEBUG(
-          neb_logger,
-          "callbacks: dependency callback called without valid dependent "
-          "host");
-      dep_host_id = 0;
-    }
-
-    // Generate service dependency event.
-    auto hd{std::make_shared<pb_host_dependency>()};
-    HostDependency& hst_dep = hd->mut_obj();
-    hst_dep.set_host_id(host_id);
-    hst_dep.set_dependent_host_id(dep_host_id);
-    hst_dep.set_enabled(nsadd->type != NEBTYPE_HOSTDEPENDENCY_DELETE);
-    if (!dep->get_dependency_period().empty())
-      hst_dep.set_dependency_period(dep->get_dependency_period());
-    {
-      std::string options;
-      if (dep->get_fail_on_down())
-        options.append("d");
-      if (dep->get_fail_on_up())
-        options.append("o");
-      if (dep->get_fail_on_pending())
-        options.append("p");
-      if (dep->get_fail_on_unreachable())
-        options.append("u");
-      if (dep->get_dependency_type() == engine::dependency::notification)
-        hst_dep.set_notification_failure_options(options);
-      else if (dep->get_dependency_type() == engine::dependency::execution)
-        hst_dep.set_execution_failure_options(options);
-    }
-    hst_dep.set_inherits_parent(dep->get_inherits_parent());
-    SPDLOG_LOGGER_DEBUG(neb_logger, "callbacks: host {} depends on host {}",
-                        dep_host_id, host_id);
-
-    // Publish dependency event.
-    neb::gl_publisher.write(hd);
-  }
-  // Service dependency.
-  else if ((NEBTYPE_SERVICEDEPENDENCY_ADD == nsadd->type) ||
-           (NEBTYPE_SERVICEDEPENDENCY_UPDATE == nsadd->type) ||
-           (NEBTYPE_SERVICEDEPENDENCY_DELETE == nsadd->type)) {
-    // Find IDs.
-    std::pair<uint64_t, uint64_t> ids;
-    std::pair<uint64_t, uint64_t> dep_ids;
-    engine::servicedependency* dep(
-        static_cast<engine::servicedependency*>(nsadd->object_ptr));
-    if (!dep->get_hostname().empty() &&
-        !dep->get_service_description().empty()) {
-      ids = engine::get_host_and_service_id(dep->get_hostname(),
-                                            dep->get_service_description());
-    } else {
-      SPDLOG_LOGGER_ERROR(
-          neb_logger,
-          "callbacks: dependency callback called without valid service");
-      ids.first = 0;
-      ids.second = 0;
-    }
-    if (!dep->get_dependent_hostname().empty() &&
-        !dep->get_dependent_service_description().empty()) {
-      dep_ids = engine::get_host_and_service_id(
-          dep->get_dependent_hostname(),
-          dep->get_dependent_service_description());
-    } else {
-      SPDLOG_LOGGER_ERROR(
-          neb_logger,
-          "callbacks: dependency callback called without valid dependent "
-          "service");
-      dep_ids.first = 0;
-      dep_ids.second = 0;
-    }
-
-    // Generate service dependency event.
-    auto sd{std::make_shared<pb_service_dependency>()};
-    ServiceDependency& svc_dep = sd->mut_obj();
-    svc_dep.set_host_id(ids.first);
-    svc_dep.set_service_id(ids.second);
-    svc_dep.set_dependent_host_id(dep_ids.first);
-    svc_dep.set_dependent_service_id(dep_ids.second);
-    svc_dep.set_enabled(nsadd->type != NEBTYPE_SERVICEDEPENDENCY_DELETE);
-    if (!dep->get_dependency_period().empty())
-      svc_dep.set_dependency_period(dep->get_dependency_period());
-    {
-      std::string options;
-      if (dep->get_fail_on_critical())
-        options.append("c");
-      if (dep->get_fail_on_ok())
-        options.append("o");
-      if (dep->get_fail_on_pending())
-        options.append("p");
-      if (dep->get_fail_on_unknown())
-        options.append("u");
-      if (dep->get_fail_on_warning())
-        options.append("w");
-      if (dep->get_dependency_type() == engine::dependency::notification)
-        svc_dep.set_notification_failure_options(options);
-      else if (dep->get_dependency_type() == engine::dependency::execution)
-        svc_dep.set_execution_failure_options(options);
-    }
-    svc_dep.set_inherits_parent(dep->get_inherits_parent());
-    SPDLOG_LOGGER_DEBUG(
-        neb_logger, "callbacks: service ({}, {}) depends on service ({}, {})",
-        dep_ids.first, dep_ids.second, ids.first, ids.second);
-
-    // Publish dependency event.
-    neb::gl_publisher.write(sd);
-  }
-
   return 0;
 }
 
@@ -1406,7 +1081,8 @@ int neb::callback_group(int callback_type, void* data) {
         auto new_hg{std::make_shared<neb::host_group>()};
         new_hg->poller_id = config::applier::state::instance().poller_id();
         new_hg->id = host_group->get_id();
-        new_hg->enabled = (group_data->type != NEBTYPE_HOSTGROUP_DELETE &&
+        new_hg->enabled = group_data->type == NEBTYPE_HOSTGROUP_ADD ||
+                          (group_data->type == NEBTYPE_HOSTGROUP_UPDATE &&
                            !host_group->members.empty());
         new_hg->name = common::check_string_utf8(host_group->get_group_name());
 
@@ -1436,7 +1112,8 @@ int neb::callback_group(int callback_type, void* data) {
         auto new_sg{std::make_shared<neb::service_group>()};
         new_sg->poller_id = config::applier::state::instance().poller_id();
         new_sg->id = service_group->get_id();
-        new_sg->enabled = (group_data->type != NEBTYPE_SERVICEGROUP_DELETE &&
+        new_sg->enabled = group_data->type == NEBTYPE_SERVICEGROUP_ADD ||
+                          (group_data->type == NEBTYPE_SERVICEGROUP_UPDATE &&
                            !service_group->members.empty());
         new_sg->name =
             common::check_string_utf8(service_group->get_group_name());
@@ -1484,26 +1161,26 @@ int neb::callback_pb_group(int callback_type, void* data) {
   nebstruct_group_data const* group_data(
       static_cast<nebstruct_group_data*>(data));
 
-  SPDLOG_LOGGER_DEBUG(neb_logger,
-                      "callbacks: generating pb group event type:{}",
-                      group_data->type);
-
   // Host group.
   if ((NEBTYPE_HOSTGROUP_ADD == group_data->type) ||
       (NEBTYPE_HOSTGROUP_UPDATE == group_data->type) ||
       (NEBTYPE_HOSTGROUP_DELETE == group_data->type)) {
     engine::hostgroup const* host_group(
         static_cast<engine::hostgroup*>(group_data->object_ptr));
+    SPDLOG_LOGGER_DEBUG(
+        neb_logger,
+        "callbacks: generating pb host group {} (id: {}) event type:{}",
+        host_group->get_group_name(), host_group->get_id(), group_data->type);
+
     if (!host_group->get_group_name().empty()) {
       auto new_hg{std::make_shared<neb::pb_host_group>()};
-      new_hg->mut_obj().set_poller_id(
-          config::applier::state::instance().poller_id());
-      new_hg->mut_obj().set_hostgroup_id(host_group->get_id());
-      new_hg->mut_obj().set_enabled(group_data->type !=
-                                        NEBTYPE_HOSTGROUP_DELETE &&
-                                    !host_group->members.empty());
-      new_hg->mut_obj().set_name(
-          common::check_string_utf8(host_group->get_group_name()));
+      auto& obj = new_hg->mut_obj();
+      obj.set_poller_id(config::applier::state::instance().poller_id());
+      obj.set_hostgroup_id(host_group->get_id());
+      obj.set_enabled(group_data->type == NEBTYPE_HOSTGROUP_ADD ||
+                      (group_data->type == NEBTYPE_HOSTGROUP_UPDATE &&
+                       !host_group->members.empty()));
+      obj.set_name(common::check_string_utf8(host_group->get_group_name()));
 
       // Send host group event.
       if (host_group->get_id()) {
@@ -1532,16 +1209,21 @@ int neb::callback_pb_group(int callback_type, void* data) {
            (NEBTYPE_SERVICEGROUP_DELETE == group_data->type)) {
     engine::servicegroup const* service_group(
         static_cast<engine::servicegroup*>(group_data->object_ptr));
+    SPDLOG_LOGGER_DEBUG(
+        neb_logger,
+        "callbacks: generating pb host group {} (id: {}) event type:{}",
+        service_group->get_group_name(), service_group->get_id(),
+        group_data->type);
+
     if (!service_group->get_group_name().empty()) {
       auto new_sg{std::make_shared<neb::pb_service_group>()};
-      new_sg->mut_obj().set_poller_id(
-          config::applier::state::instance().poller_id());
-      new_sg->mut_obj().set_servicegroup_id(service_group->get_id());
-      new_sg->mut_obj().set_enabled(group_data->type !=
-                                        NEBTYPE_SERVICEGROUP_DELETE &&
-                                    !service_group->members.empty());
-      new_sg->mut_obj().set_name(
-          common::check_string_utf8(service_group->get_group_name()));
+      auto& obj = new_sg->mut_obj();
+      obj.set_poller_id(config::applier::state::instance().poller_id());
+      obj.set_servicegroup_id(service_group->get_id());
+      obj.set_enabled(group_data->type == NEBTYPE_SERVICEGROUP_ADD ||
+                      (group_data->type == NEBTYPE_SERVICEGROUP_UPDATE &&
+                       !service_group->members.empty()));
+      obj.set_name(common::check_string_utf8(service_group->get_group_name()));
 
       // Send service group event.
       if (service_group->get_id()) {
@@ -1698,8 +1380,8 @@ int neb::callback_pb_group_member(int callback_type, void* data) {
       static_cast<nebstruct_group_member_data*>(data));
 
   // Host group member.
-  if ((member_data->type == NEBTYPE_HOSTGROUPMEMBER_ADD) ||
-      (member_data->type == NEBTYPE_HOSTGROUPMEMBER_DELETE)) {
+  if (member_data->type == NEBTYPE_HOSTGROUPMEMBER_ADD ||
+      member_data->type == NEBTYPE_HOSTGROUPMEMBER_DELETE) {
     engine::host const* hst(
         static_cast<engine::host*>(member_data->object_ptr));
     engine::hostgroup const* hg(
@@ -2298,10 +1980,9 @@ int neb::callback_pb_host_check(int callback_type, void* data) {
  *
  *  @return 0 on success.
  */
-int neb::callback_host_status(int callback_type, void* data) {
+int neb::callback_host_status(int callback_type [[maybe_unused]], void* data) {
   // Log message.
   SPDLOG_LOGGER_DEBUG(neb_logger, "callbacks: generating host status event");
-  (void)callback_type;
 
   try {
     // In/Out variables.
@@ -2427,90 +2108,115 @@ int neb::callback_host_status(int callback_type, void* data) {
  *
  *  @return 0 on success.
  */
-int neb::callback_pb_host_status(int callback_type, void* data) noexcept {
+int neb::callback_pb_host_status(int callback_type [[maybe_unused]],
+                                 void* data) noexcept {
   // Log message.
   SPDLOG_LOGGER_DEBUG(
       neb_logger,
       "callbacks: generating pb host status check result event protobuf");
-  (void)callback_type;
 
-  const engine::host* eh{static_cast<engine::host*>(
-      static_cast<nebstruct_host_status_data*>(data)->object_ptr)};
+  nebstruct_host_status_data* hsd =
+      static_cast<nebstruct_host_status_data*>(data);
+  const engine::host* eh = static_cast<engine::host*>(hsd->object_ptr);
 
-  auto h{std::make_shared<neb::pb_host_status>()};
-  HostStatus& hscr = h.get()->mut_obj();
-
-  hscr.set_host_id(eh->host_id());
-  if (hscr.host_id() == 0)
-    SPDLOG_LOGGER_ERROR(neb_logger, "could not find ID of host '{}'",
-                        eh->name());
-
-  if (eh->problem_has_been_acknowledged())
-    hscr.set_acknowledgement_type(eh->get_acknowledgement());
-  else
-    hscr.set_acknowledgement_type(AckType::NONE);
-
-  hscr.set_check_type(static_cast<HostStatus_CheckType>(eh->get_check_type()));
-  hscr.set_check_attempt(eh->get_current_attempt());
-  hscr.set_state(static_cast<HostStatus_State>(
-      eh->has_been_checked() ? eh->get_current_state() : 4));  // Pending state.
-  hscr.set_execution_time(eh->get_execution_time());
-  hscr.set_checked(eh->has_been_checked());
-  hscr.set_flapping(eh->get_is_flapping());
-  hscr.set_last_check(eh->get_last_check());
-  hscr.set_last_hard_state(
-      static_cast<HostStatus_State>(eh->get_last_hard_state()));
-  hscr.set_last_hard_state_change(eh->get_last_hard_state_change());
-  hscr.set_last_notification(eh->get_last_notification());
-  hscr.set_notification_number(eh->get_notification_number());
-  hscr.set_last_state_change(eh->get_last_state_change());
-  hscr.set_last_time_down(eh->get_last_time_down());
-  hscr.set_last_time_unreachable(eh->get_last_time_unreachable());
-  hscr.set_last_time_up(eh->get_last_time_up());
-  hscr.set_latency(eh->get_latency());
-  hscr.set_next_check(eh->get_next_check());
-  hscr.set_next_host_notification(eh->get_next_notification());
-  hscr.set_no_more_notifications(eh->get_no_more_notifications());
-  if (!eh->get_plugin_output().empty())
-    hscr.set_output(common::check_string_utf8(eh->get_plugin_output()));
-  if (!eh->get_long_plugin_output().empty())
-    hscr.set_output(common::check_string_utf8(eh->get_long_plugin_output()));
-
-  hscr.set_percent_state_change(eh->get_percent_state_change());
-  if (!eh->get_perf_data().empty())
-    hscr.set_perfdata(common::check_string_utf8(eh->get_perf_data()));
-  hscr.set_should_be_scheduled(eh->get_should_be_scheduled());
-  hscr.set_state_type(static_cast<HostStatus_StateType>(
-      eh->has_been_checked() ? eh->get_state_type() : engine::notifier::hard));
-  hscr.set_scheduled_downtime_depth(eh->get_scheduled_downtime_depth());
-
-  // Send event(s).
-  gl_publisher.write(h);
-
-  // Acknowledgement event.
-  auto it = gl_acknowledgements.find(std::make_pair(hscr.host_id(), 0u));
-  if (it != gl_acknowledgements.end() &&
-      hscr.acknowledgement_type() == AckType::NONE) {
-    if (it->second->type() == make_type(io::neb, de_pb_acknowledgement)) {
-      neb_logger->debug("acknowledgement found on host {}", hscr.host_id());
-      neb::pb_acknowledgement* a =
-          static_cast<neb::pb_acknowledgement*>(it->second.get());
-      if (!(!hscr.state()  // !(OK or (normal ack and NOK))
-            || (!a->obj().sticky() &&
-                hscr.state() != static_cast<short>(a->obj().state())))) {
-        a->mut_obj().set_deletion_time(time(nullptr));
-        gl_publisher.write(std::move(it->second));
+  auto handle_acknowledgement = [](uint16_t state, auto& hscr) {
+    auto it = gl_acknowledgements.find(std::make_pair(hscr.host_id(), 0u));
+    if (it != gl_acknowledgements.end() &&
+        hscr.acknowledgement_type() == AckType::NONE) {
+      if (it->second->type() == make_type(io::neb, de_pb_acknowledgement)) {
+        neb_logger->debug("acknowledgement found on host {}", hscr.host_id());
+        neb::pb_acknowledgement* a =
+            static_cast<neb::pb_acknowledgement*>(it->second.get());
+        if (!(!state  // !(OK or (normal ack and NOK))
+              || (!a->obj().sticky() && state != a->obj().state()))) {
+          a->mut_obj().set_deletion_time(time(nullptr));
+          gl_publisher.write(std::move(it->second));
+        }
+      } else {
+        neb::acknowledgement* a =
+            static_cast<neb::acknowledgement*>(it->second.get());
+        if (!(!state  // !(OK or (normal ack and NOK))
+              || (!a->is_sticky && state != a->state))) {
+          a->deletion_time = time(nullptr);
+          gl_publisher.write(std::move(it->second));
+        }
       }
-    } else {
-      neb::acknowledgement* a =
-          static_cast<neb::acknowledgement*>(it->second.get());
-      if (!(!hscr.state()  // !(OK or (normal ack and NOK))
-            || (!a->is_sticky && hscr.state() != a->state))) {
-        a->deletion_time = time(nullptr);
-        gl_publisher.write(std::move(it->second));
-      }
+      gl_acknowledgements.erase(it);
     }
-    gl_acknowledgements.erase(it);
+  };
+
+  uint16_t state =
+      eh->has_been_checked() ? eh->get_current_state() : 4;  // Pending state.
+
+  if (hsd->attributes != engine::host::STATUS_ALL) {
+    auto h{std::make_shared<neb::pb_adaptive_host_status>()};
+    AdaptiveHostStatus& hst = h.get()->mut_obj();
+    if (hsd->attributes & engine::host::STATUS_DOWNTIME_DEPTH) {
+      hst.set_host_id(eh->host_id());
+      hst.set_scheduled_downtime_depth(eh->get_scheduled_downtime_depth());
+    }
+    if (hsd->attributes & engine::host::STATUS_NOTIFICATION_NUMBER) {
+      hst.set_host_id(eh->host_id());
+      hst.set_notification_number(eh->get_notification_number());
+    }
+    if (hsd->attributes & engine::host::STATUS_ACKNOWLEDGEMENT) {
+      hst.set_host_id(eh->host_id());
+      hst.set_acknowledgement_type(eh->get_acknowledgement());
+    }
+    gl_publisher.write(h);
+
+    // Acknowledgement event.
+    handle_acknowledgement(state, hst);
+  } else {
+    auto h{std::make_shared<neb::pb_host_status>()};
+    HostStatus& hscr = h.get()->mut_obj();
+
+    hscr.set_host_id(eh->host_id());
+    if (hscr.host_id() == 0)
+      SPDLOG_LOGGER_ERROR(neb_logger, "could not find ID of host '{}'",
+                          eh->name());
+
+    hscr.set_acknowledgement_type(eh->get_acknowledgement());
+    hscr.set_check_type(
+        static_cast<HostStatus_CheckType>(eh->get_check_type()));
+    hscr.set_check_attempt(eh->get_current_attempt());
+    hscr.set_state(static_cast<HostStatus_State>(state));
+    hscr.set_execution_time(eh->get_execution_time());
+    hscr.set_checked(eh->has_been_checked());
+    hscr.set_flapping(eh->get_is_flapping());
+    hscr.set_last_check(eh->get_last_check());
+    hscr.set_last_hard_state(
+        static_cast<HostStatus_State>(eh->get_last_hard_state()));
+    hscr.set_last_hard_state_change(eh->get_last_hard_state_change());
+    hscr.set_last_notification(eh->get_last_notification());
+    hscr.set_notification_number(eh->get_notification_number());
+    hscr.set_last_state_change(eh->get_last_state_change());
+    hscr.set_last_time_down(eh->get_last_time_down());
+    hscr.set_last_time_unreachable(eh->get_last_time_unreachable());
+    hscr.set_last_time_up(eh->get_last_time_up());
+    hscr.set_latency(eh->get_latency());
+    hscr.set_next_check(eh->get_next_check());
+    hscr.set_next_host_notification(eh->get_next_notification());
+    hscr.set_no_more_notifications(eh->get_no_more_notifications());
+    if (!eh->get_plugin_output().empty())
+      hscr.set_output(common::check_string_utf8(eh->get_plugin_output()));
+    if (!eh->get_long_plugin_output().empty())
+      hscr.set_output(common::check_string_utf8(eh->get_long_plugin_output()));
+
+    hscr.set_percent_state_change(eh->get_percent_state_change());
+    if (!eh->get_perf_data().empty())
+      hscr.set_perfdata(common::check_string_utf8(eh->get_perf_data()));
+    hscr.set_should_be_scheduled(eh->get_should_be_scheduled());
+    hscr.set_state_type(static_cast<HostStatus_StateType>(
+        eh->has_been_checked() ? eh->get_state_type()
+                               : engine::notifier::hard));
+    hscr.set_scheduled_downtime_depth(eh->get_scheduled_downtime_depth());
+
+    // Send event(s).
+    gl_publisher.write(h);
+
+    // Acknowledgement event.
+    handle_acknowledgement(state, hscr);
   }
   neb_logger->debug("Still {} running acknowledgements",
                     gl_acknowledgements.size());
@@ -2908,12 +2614,8 @@ int neb::callback_relation(int callback_type, void* data) {
       if (relation->hst && relation->dep_hst && !relation->svc &&
           !relation->dep_svc) {
         // Find host IDs.
-        int host_id;
-        int parent_id;
-        {
-          host_id = engine::get_host_id(relation->dep_hst->name());
-          parent_id = engine::get_host_id(relation->hst->name());
-        }
+        int host_id = relation->dep_hst->host_id();
+        int parent_id = relation->hst->host_id();
         if (host_id && parent_id) {
           // Generate parent event.
           auto new_host_parent{std::make_shared<host_parent>()};
@@ -2964,10 +2666,8 @@ int neb::callback_pb_relation(int callback_type [[maybe_unused]], void* data) {
       if (relation->hst && relation->dep_hst && !relation->svc &&
           !relation->dep_svc) {
         // Find host IDs.
-        int host_id;
-        int parent_id;
-        host_id = engine::get_host_id(relation->dep_hst->name());
-        parent_id = engine::get_host_id(relation->hst->name());
+        int host_id = relation->dep_hst->host_id();
+        int parent_id = relation->hst->host_id();
         if (host_id && parent_id) {
           // Generate parent event.
           auto new_host_parent{std::make_shared<pb_host_parent>()};
@@ -3163,6 +2863,50 @@ int neb::callback_service(int callback_type, void* data) {
   return 0;
 }
 
+template <typename SrvStatus>
+static void fill_service_type(SrvStatus& ss,
+                              const com::centreon::engine::service* es) {
+  switch (es->get_service_type()) {
+    case com::centreon::engine::service_type::METASERVICE: {
+      ss.set_type(METASERVICE);
+      uint64_t iid;
+      if (absl::SimpleAtoi(es->description().c_str() + 5, &iid))
+        ss.set_internal_id(iid);
+      else {
+        SPDLOG_LOGGER_ERROR(
+            neb_logger,
+            "callbacks: service ('{}', '{}') looks like a meta-service but "
+            "its name is malformed",
+            es->get_hostname(), es->description());
+      }
+    } break;
+    case com::centreon::engine::service_type::BA: {
+      ss.set_type(BA);
+      uint64_t iid;
+      if (absl::SimpleAtoi(es->description().c_str() + 3, &iid))
+        ss.set_internal_id(iid);
+      else {
+        SPDLOG_LOGGER_ERROR(
+            neb_logger,
+            "callbacks: service ('{}', '{}') looks like a business-activity "
+            "but its name is malformed",
+            es->get_hostname(), es->description());
+      }
+    } break;
+    case com::centreon::engine::service_type::ANOMALY_DETECTION:
+      ss.set_type(ANOMALY_DETECTION);
+      {
+        auto ad =
+            static_cast<const com::centreon::engine::anomalydetection*>(es);
+        ss.set_internal_id(ad->get_internal_id());
+      }
+      break;
+    default:
+      ss.set_type(SERVICE);
+      break;
+  }
+}
+
 /**
  *  @brief Function that process protobuf service data.
  *
@@ -3190,40 +2934,69 @@ int neb::callback_pb_service(int callback_type [[maybe_unused]], void* data) {
   if (ds->type == NEBTYPE_ADAPTIVESERVICE_UPDATE &&
       ds->modified_attribute != MODATTR_ALL) {
     auto s{std::make_shared<neb::pb_adaptive_service>()};
+    bool done = false;
     AdaptiveService& srv = s.get()->mut_obj();
-    if (ds->modified_attribute & MODATTR_NOTIFICATIONS_ENABLED)
+    if (ds->modified_attribute & MODATTR_NOTIFICATIONS_ENABLED) {
       srv.set_notify(es->get_notifications_enabled());
-    else if (ds->modified_attribute & MODATTR_ACTIVE_CHECKS_ENABLED) {
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_ACTIVE_CHECKS_ENABLED) {
       srv.set_active_checks(es->active_checks_enabled());
       srv.set_should_be_scheduled(es->get_should_be_scheduled());
-    } else if (ds->modified_attribute & MODATTR_PASSIVE_CHECKS_ENABLED)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_PASSIVE_CHECKS_ENABLED) {
       srv.set_passive_checks(es->passive_checks_enabled());
-    else if (ds->modified_attribute & MODATTR_EVENT_HANDLER_ENABLED)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_EVENT_HANDLER_ENABLED) {
       srv.set_event_handler_enabled(es->event_handler_enabled());
-    else if (ds->modified_attribute & MODATTR_FLAP_DETECTION_ENABLED)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_FLAP_DETECTION_ENABLED) {
       srv.set_flap_detection_enabled(es->flap_detection_enabled());
-    else if (ds->modified_attribute & MODATTR_OBSESSIVE_HANDLER_ENABLED)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_OBSESSIVE_HANDLER_ENABLED) {
       srv.set_obsess_over_service(es->obsess_over());
-    else if (ds->modified_attribute & MODATTR_EVENT_HANDLER_COMMAND)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_EVENT_HANDLER_COMMAND) {
       srv.set_event_handler(common::check_string_utf8(es->event_handler()));
-    else if (ds->modified_attribute & MODATTR_CHECK_COMMAND)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_CHECK_COMMAND) {
       srv.set_check_command(common::check_string_utf8(es->check_command()));
-    else if (ds->modified_attribute & MODATTR_NORMAL_CHECK_INTERVAL)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_NORMAL_CHECK_INTERVAL) {
       srv.set_check_interval(es->check_interval());
-    else if (ds->modified_attribute & MODATTR_RETRY_CHECK_INTERVAL)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_RETRY_CHECK_INTERVAL) {
       srv.set_retry_interval(es->retry_interval());
-    else if (ds->modified_attribute & MODATTR_MAX_CHECK_ATTEMPTS)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_MAX_CHECK_ATTEMPTS) {
       srv.set_max_check_attempts(es->max_check_attempts());
-    else if (ds->modified_attribute & MODATTR_FRESHNESS_CHECKS_ENABLED)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_FRESHNESS_CHECKS_ENABLED) {
       srv.set_check_freshness(es->check_freshness_enabled());
-    else if (ds->modified_attribute & MODATTR_CHECK_TIMEPERIOD)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_CHECK_TIMEPERIOD) {
       srv.set_check_period(es->check_period());
-    else if (ds->modified_attribute & MODATTR_NOTIFICATION_TIMEPERIOD)
+      done = true;
+    }
+    if (ds->modified_attribute & MODATTR_NOTIFICATION_TIMEPERIOD) {
       srv.set_notification_period(es->notification_period());
-    else {
-      SPDLOG_LOGGER_ERROR(neb_logger,
-                          "callbacks: adaptive service not implemented.");
-      assert(1 == 0);
+      done = true;
+    }
+    if (!done) {
+      SPDLOG_LOGGER_ERROR(
+          neb_logger, "callbacks: adaptive service field {} not implemented.",
+          ds->modified_attribute);
     }
     std::pair<uint64_t, uint64_t> p{
         engine::get_host_and_service_id(es->get_hostname(), es->description())};
@@ -3296,58 +3069,12 @@ int neb::callback_pb_service(int callback_type [[maybe_unused]], void* data) {
     srv.set_high_flap_threshold(es->get_high_flap_threshold());
     if (!es->description().empty())
       srv.set_description(common::check_string_utf8(es->description()));
-
     if (!es->get_hostname().empty()) {
       std::string name{common::check_string_utf8(es->get_hostname())};
-      switch (es->get_service_type()) {
-        case com::centreon::engine::service_type::METASERVICE: {
-          srv.set_type(METASERVICE);
-          uint64_t iid = 0;
-          for (auto c = srv.description().begin() + 5;
-               c != srv.description().end(); ++c) {
-            if (!isdigit(*c)) {
-              SPDLOG_LOGGER_ERROR(
-                  neb_logger,
-                  "callbacks: service ('{}', '{}') looks like a meta-service "
-                  "but its name is malformed",
-                  name, srv.description());
-              break;
-            }
-            iid = 10 * iid + (*c - '0');
-          }
-          srv.set_internal_id(iid);
-        } break;
-        case com::centreon::engine::service_type::BA: {
-          srv.set_type(BA);
-          uint64_t iid = 0;
-          for (auto c = srv.description().begin() + 3;
-               c != srv.description().end(); ++c) {
-            if (!isdigit(*c)) {
-              SPDLOG_LOGGER_ERROR(
-                  neb_logger,
-                  "callbacks: service ('{}', '{}') looks like a "
-                  "business-activity but its name is malformed",
-                  name, srv.description());
-              break;
-            }
-            iid = 10 * iid + (*c - '0');
-          }
-          srv.set_internal_id(iid);
-        } break;
-        case com::centreon::engine::service_type::ANOMALY_DETECTION:
-          srv.set_type(ANOMALY_DETECTION);
-          {
-            auto ad =
-                static_cast<const com::centreon::engine::anomalydetection*>(es);
-            srv.set_internal_id(ad->get_internal_id());
-          }
-          break;
-        default:
-          srv.set_type(SERVICE);
-          break;
-      }
       *srv.mutable_host_name() = std::move(name);
     }
+    fill_service_type(srv, es);
+
     if (!es->get_icon_image().empty())
       *srv.mutable_icon_image() =
           common::check_string_utf8(es->get_icon_image());
@@ -3692,140 +3419,132 @@ int32_t neb::callback_pb_service_status(int callback_type [[maybe_unused]],
   SPDLOG_LOGGER_DEBUG(
       neb_logger, "callbacks: generating pb service status check result event");
 
-  const engine::service* es{static_cast<engine::service*>(
-      static_cast<nebstruct_service_status_data*>(data)->object_ptr)};
-  neb_logger->debug("callbacks: pb_service_status ({},{}) status {}, type {}",
-                    es->host_id(), es->service_id(),
-                    static_cast<uint32_t>(es->get_current_state()),
-                    static_cast<uint32_t>(es->get_check_type()));
+  nebstruct_service_status_data* ds =
+      static_cast<nebstruct_service_status_data*>(data);
+  const engine::service* es = static_cast<engine::service*>(ds->object_ptr);
+  neb_logger->debug(
+      "callbacks: pb_service_status ({},{}) status {}, attributes {}, type {}",
+      es->host_id(), es->service_id(),
+      static_cast<uint32_t>(es->get_current_state()), ds->attributes,
+      static_cast<uint32_t>(es->get_check_type()));
 
-  auto s{std::make_shared<neb::pb_service_status>()};
-  ServiceStatus& sscr = s.get()->mut_obj();
+  auto handle_acknowledgement = [](uint16_t state, auto& r) {
+    neb_logger->debug("Looking for acknowledgement on service ({}:{})",
+                      r.host_id(), r.service_id());
+    auto it =
+        gl_acknowledgements.find(std::make_pair(r.host_id(), r.service_id()));
+    if (it != gl_acknowledgements.end() &&
+        r.acknowledgement_type() == AckType::NONE) {
+      neb_logger->debug("acknowledgement found on service ({}:{})", r.host_id(),
+                        r.service_id());
+      if (it->second->type() == make_type(io::neb, de_pb_acknowledgement)) {
+        neb::pb_acknowledgement* a =
+            static_cast<neb::pb_acknowledgement*>(it->second.get());
+        if (!(!state  // !(OK or (normal ack and NOK))
+              || (!a->obj().sticky() && state != a->obj().state()))) {
+          a->mut_obj().set_deletion_time(time(nullptr));
+          gl_publisher.write(std::move(it->second));
+        }
+      } else {
+        neb::acknowledgement* a =
+            static_cast<neb::acknowledgement*>(it->second.get());
+        if (!(!state  // !(OK or (normal ack and NOK))
+              || (!a->is_sticky && state != a->state))) {
+          a->deletion_time = time(nullptr);
+          gl_publisher.write(std::move(it->second));
+        }
+      }
+      gl_acknowledgements.erase(it);
+    }
+  };
+  uint16_t state =
+      es->has_been_checked() ? es->get_current_state() : 4;  // Pending state.
+  if (ds->attributes != engine::service::STATUS_ALL) {
+    auto as = std::make_shared<neb::pb_adaptive_service_status>();
+    AdaptiveServiceStatus& asscr = as.get()->mut_obj();
+    fill_service_type(asscr, es);
+    if (ds->attributes & engine::service::STATUS_DOWNTIME_DEPTH) {
+      asscr.set_host_id(es->host_id());
+      asscr.set_service_id(es->service_id());
+      asscr.set_scheduled_downtime_depth(es->get_scheduled_downtime_depth());
+    }
+    if (ds->attributes & engine::service::STATUS_NOTIFICATION_NUMBER) {
+      asscr.set_host_id(es->host_id());
+      asscr.set_service_id(es->service_id());
+      asscr.set_notification_number(es->get_notification_number());
+    }
+    if (ds->attributes & engine::service::STATUS_ACKNOWLEDGEMENT) {
+      asscr.set_host_id(es->host_id());
+      asscr.set_service_id(es->service_id());
+      asscr.set_acknowledgement_type(es->get_acknowledgement());
+    }
+    gl_publisher.write(as);
 
-  sscr.set_host_id(es->host_id());
-  sscr.set_service_id(es->service_id());
-  if (es->host_id() == 0 || es->service_id() == 0)
-    SPDLOG_LOGGER_ERROR(neb_logger, "could not find ID of service ('{}', '{}')",
-                        es->get_hostname(), es->description());
-
-  if (es->problem_has_been_acknowledged())
-    sscr.set_acknowledgement_type(es->get_acknowledgement());
-  else
-    sscr.set_acknowledgement_type(AckType::NONE);
-
-  sscr.set_check_type(
-      static_cast<ServiceStatus_CheckType>(es->get_check_type()));
-  sscr.set_check_attempt(es->get_current_attempt());
-  sscr.set_state(static_cast<ServiceStatus_State>(
-      es->has_been_checked() ? es->get_current_state() : 4));  // Pending state.
-  sscr.set_execution_time(es->get_execution_time());
-  sscr.set_checked(es->has_been_checked());
-  sscr.set_flapping(es->get_is_flapping());
-  sscr.set_last_check(es->get_last_check());
-  sscr.set_last_hard_state(
-      static_cast<ServiceStatus_State>(es->get_last_hard_state()));
-  sscr.set_last_hard_state_change(es->get_last_hard_state_change());
-  sscr.set_last_notification(es->get_last_notification());
-  sscr.set_notification_number(es->get_notification_number());
-  sscr.set_last_state_change(es->get_last_state_change());
-  sscr.set_last_time_critical(es->get_last_time_critical());
-  sscr.set_last_time_ok(es->get_last_time_ok());
-  sscr.set_last_time_unknown(es->get_last_time_unknown());
-  sscr.set_last_time_warning(es->get_last_time_warning());
-  sscr.set_latency(es->get_latency());
-  sscr.set_next_check(es->get_next_check());
-  sscr.set_next_notification(es->get_next_notification());
-  sscr.set_no_more_notifications(es->get_no_more_notifications());
-  if (!es->get_plugin_output().empty())
-    sscr.set_output(common::check_string_utf8(es->get_plugin_output()));
-  if (!es->get_long_plugin_output().empty())
-    sscr.set_long_output(
-        common::check_string_utf8(es->get_long_plugin_output()));
-  sscr.set_percent_state_change(es->get_percent_state_change());
-  if (!es->get_perf_data().empty()) {
-    sscr.set_perfdata(common::check_string_utf8(es->get_perf_data()));
-    SPDLOG_LOGGER_TRACE(neb_logger,
-                        "callbacks: service ({}, {}) has perfdata <<{}>>",
-                        es->host_id(), es->service_id(), es->get_perf_data());
+    // Acknowledgement event.
+    handle_acknowledgement(state, asscr);
   } else {
-    SPDLOG_LOGGER_TRACE(neb_logger,
-                        "callbacks: service ({}, {}) has no perfdata",
-                        es->host_id(), es->service_id());
-  }
-  sscr.set_should_be_scheduled(es->get_should_be_scheduled());
-  sscr.set_state_type(static_cast<ServiceStatus_StateType>(
-      es->has_been_checked() ? es->get_state_type() : engine::notifier::hard));
-  sscr.set_scheduled_downtime_depth(es->get_scheduled_downtime_depth());
+    auto s{std::make_shared<neb::pb_service_status>()};
+    ServiceStatus& sscr = s.get()->mut_obj();
 
-  if (!es->get_hostname().empty()) {
-    if (strncmp(es->get_hostname().c_str(), "_Module_Meta", 13) == 0) {
-      if (strncmp(es->description().c_str(), "meta_", 5) == 0) {
-        sscr.set_type(METASERVICE);
-        uint64_t iid = 0;
-        for (auto c = es->description().begin() + 5;
-             c != es->description().end(); ++c) {
-          if (!isdigit(*c)) {
-            SPDLOG_LOGGER_ERROR(
-                neb_logger,
-                "callbacks: service ('{}', '{}') looks like a meta-service "
-                "but its name is malformed",
-                es->get_hostname(), es->description());
-            break;
-          }
-          iid = 10 * iid + (*c - '0');
-        }
-        sscr.set_internal_id(iid);
-      }
-    } else if (strncmp(es->get_hostname().c_str(), "_Module_BAM", 11) == 0) {
-      if (strncmp(es->description().c_str(), "ba_", 3) == 0) {
-        sscr.set_type(BA);
-        uint64_t iid = 0;
-        for (auto c = es->description().begin() + 3;
-             c != es->description().end(); ++c) {
-          if (!isdigit(*c)) {
-            SPDLOG_LOGGER_ERROR(neb_logger,
-                                "callbacks: service ('{}', '{}') looks like a "
-                                "business-activity but its name is malformed",
-                                es->get_hostname(), es->description());
-            break;
-          }
-          iid = 10 * iid + (*c - '0');
-        }
-        sscr.set_internal_id(iid);
-      }
-    }
-  }
-  // Send event(s).
-  gl_publisher.write(s);
+    fill_service_type(sscr, es);
+    sscr.set_host_id(es->host_id());
+    sscr.set_service_id(es->service_id());
+    if (es->host_id() == 0 || es->service_id() == 0)
+      SPDLOG_LOGGER_ERROR(neb_logger,
+                          "could not find ID of service ('{}', '{}')",
+                          es->get_hostname(), es->description());
 
-  neb_logger->debug("Looking for acknowledgement on service ({}:{})",
-                    sscr.host_id(), sscr.service_id());
-  // Acknowledgement event.
-  auto it = gl_acknowledgements.find(
-      std::make_pair(sscr.host_id(), sscr.service_id()));
-  if (it != gl_acknowledgements.end() &&
-      sscr.acknowledgement_type() == AckType::NONE) {
-    neb_logger->debug("acknowledgement found on service ({}:{})",
-                      sscr.host_id(), sscr.service_id());
-    if (it->second->type() == make_type(io::neb, de_pb_acknowledgement)) {
-      neb::pb_acknowledgement* a =
-          static_cast<neb::pb_acknowledgement*>(it->second.get());
-      if (!(!sscr.state()  // !(OK or (normal ack and NOK))
-            || (!a->obj().sticky() &&
-                static_cast<uint32_t>(sscr.state()) != a->obj().state()))) {
-        a->mut_obj().set_deletion_time(time(nullptr));
-        gl_publisher.write(std::move(it->second));
-      }
+    sscr.set_acknowledgement_type(es->get_acknowledgement());
+
+    sscr.set_check_type(
+        static_cast<ServiceStatus_CheckType>(es->get_check_type()));
+    sscr.set_check_attempt(es->get_current_attempt());
+    sscr.set_state(static_cast<ServiceStatus_State>(state));
+    sscr.set_execution_time(es->get_execution_time());
+    sscr.set_checked(es->has_been_checked());
+    sscr.set_flapping(es->get_is_flapping());
+    sscr.set_last_check(es->get_last_check());
+    sscr.set_last_hard_state(
+        static_cast<ServiceStatus_State>(es->get_last_hard_state()));
+    sscr.set_last_hard_state_change(es->get_last_hard_state_change());
+    sscr.set_last_notification(es->get_last_notification());
+    sscr.set_notification_number(es->get_notification_number());
+    sscr.set_last_state_change(es->get_last_state_change());
+    sscr.set_last_time_critical(es->get_last_time_critical());
+    sscr.set_last_time_ok(es->get_last_time_ok());
+    sscr.set_last_time_unknown(es->get_last_time_unknown());
+    sscr.set_last_time_warning(es->get_last_time_warning());
+    sscr.set_latency(es->get_latency());
+    sscr.set_next_check(es->get_next_check());
+    sscr.set_next_notification(es->get_next_notification());
+    sscr.set_no_more_notifications(es->get_no_more_notifications());
+    if (!es->get_plugin_output().empty())
+      sscr.set_output(common::check_string_utf8(es->get_plugin_output()));
+    if (!es->get_long_plugin_output().empty())
+      sscr.set_long_output(
+          common::check_string_utf8(es->get_long_plugin_output()));
+    sscr.set_percent_state_change(es->get_percent_state_change());
+    if (!es->get_perf_data().empty()) {
+      sscr.set_perfdata(common::check_string_utf8(es->get_perf_data()));
+      SPDLOG_LOGGER_TRACE(neb_logger,
+                          "callbacks: service ({}, {}) has perfdata <<{}>>",
+                          es->host_id(), es->service_id(), es->get_perf_data());
     } else {
-      neb::acknowledgement* a =
-          static_cast<neb::acknowledgement*>(it->second.get());
-      if (!(!sscr.state()  // !(OK or (normal ack and NOK))
-            || (!a->is_sticky && sscr.state() != a->state))) {
-        a->deletion_time = time(nullptr);
-        gl_publisher.write(std::move(it->second));
-      }
+      SPDLOG_LOGGER_TRACE(neb_logger,
+                          "callbacks: service ({}, {}) has no perfdata",
+                          es->host_id(), es->service_id());
     }
-    gl_acknowledgements.erase(it);
+    sscr.set_should_be_scheduled(es->get_should_be_scheduled());
+    sscr.set_state_type(static_cast<ServiceStatus_StateType>(
+        es->has_been_checked() ? es->get_state_type()
+                               : engine::notifier::hard));
+    sscr.set_scheduled_downtime_depth(es->get_scheduled_downtime_depth());
+
+    // Send event(s).
+    gl_publisher.write(s);
+
+    // Acknowledgement event.
+    handle_acknowledgement(state, sscr);
   }
   neb_logger->debug("Still {} running acknowledgements",
                     gl_acknowledgements.size());

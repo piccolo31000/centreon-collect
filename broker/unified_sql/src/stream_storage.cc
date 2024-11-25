@@ -17,11 +17,8 @@
  */
 
 #include <absl/synchronization/mutex.h>
-#include <fmt/format.h>
 
 #include <cfloat>
-#include <cstring>
-#include <list>
 #include <sstream>
 
 #include "bbdo/storage/index_mapping.hh"
@@ -31,15 +28,12 @@
 #include "bbdo/storage/status.hh"
 #include "com/centreon/broker/cache/global_cache.hh"
 #include "com/centreon/broker/misc/misc.hh"
-#include "com/centreon/broker/misc/shared_mutex.hh"
 #include "com/centreon/broker/misc/string.hh"
 #include "com/centreon/broker/neb/events.hh"
 #include "com/centreon/broker/sql/table_max_size.hh"
 #include "com/centreon/broker/unified_sql/internal.hh"
 #include "com/centreon/broker/unified_sql/stream.hh"
-#include "com/centreon/common/perfdata.hh"
 #include "com/centreon/common/utf8.hh"
-#include "com/centreon/exceptions/msg_fmt.hh"
 
 using namespace com::centreon::exceptions;
 using namespace com::centreon::broker;
@@ -817,9 +811,8 @@ void stream::_check_queues(boost::system::error_code ec) {
 
     try {
       if (_bulk_prepared_statement) {
-        _finish_action(-1, actions::host_parents | actions::comments |
-                               actions::downtimes | actions::host_dependencies |
-                               actions::service_dependencies);
+        _finish_action(
+            -1, actions::host_parents | actions::comments | actions::downtimes);
         if (_store_in_hosts_services) {
           if (_hscr_bind) {
             SPDLOG_LOGGER_TRACE(
@@ -962,9 +955,7 @@ void stream::_check_queues(boost::system::error_code ec) {
           SPDLOG_LOGGER_DEBUG(_logger_sql, "{} new downtimes inserted",
                               _downtimes->row_count());
           _finish_action(-1, actions::hosts | actions::instances |
-                                 actions::downtimes | actions::host_parents |
-                                 actions::host_dependencies |
-                                 actions::service_dependencies);
+                                 actions::downtimes | actions::host_parents);
           int32_t conn = special_conn::downtime % _mysql.connections_count();
           _downtimes->execute(_mysql, database::mysql_error::store_downtime,
                               conn);
@@ -1117,6 +1108,6 @@ void stream::_check_rebuild_index() {
     auto& obj = rg->mut_obj();
     for (auto& i : index_to_rebuild)
       obj.add_index_ids(i);
-    _rebuilder.rebuild_graphs(rg);
+    _rebuilder.rebuild_graphs(rg, _logger_sql);
   }
 }

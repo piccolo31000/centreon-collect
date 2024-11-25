@@ -16,7 +16,6 @@
  * For more information : contact@centreon.com
  *
  */
-#include "com/centreon/engine/notifier.hh"
 
 #include "com/centreon/engine/broker.hh"
 #include "com/centreon/engine/checks/checker.hh"
@@ -30,7 +29,6 @@
 #include "com/centreon/engine/neberrors.hh"
 #include "com/centreon/engine/notification.hh"
 #include "com/centreon/engine/timezone_locker.hh"
-#include "com/centreon/engine/utils.hh"
 
 using namespace com::centreon::engine;
 using namespace com::centreon::engine::logging;
@@ -206,7 +204,7 @@ void notifier::set_last_problem_id(unsigned long last_problem_id) noexcept {
 }
 
 /**
- * @brief Set the current notification number and update the notifier status.
+ * @brief Set the current notification number and send this update to Broker.
  *
  * @param num The notification number.
  */
@@ -218,7 +216,7 @@ void notifier::set_notification_number(int num) {
   _notification_number = num;
 
   /* update the status log with the notifier info */
-  update_status();
+  update_status(STATUS_NOTIFICATION_NUMBER);
 }
 
 bool notifier::_is_notification_viable_normal(reason_type type
@@ -244,7 +242,12 @@ bool notifier::_is_notification_viable_normal(reason_type type
   }
 
   /* are notifications enabled? */
-  if (!config->enable_notifications()) {
+#ifdef LEGACY_CONF
+  bool enable_notifications = config->enable_notifications();
+#else
+  bool enable_notifications = pb_config.enable_notifications();
+#endif
+  if (!enable_notifications) {
     engine_logger(dbg_notifications, more)
         << "Notifications are disabled, so notifications will "
            "not be sent out.";
@@ -355,19 +358,24 @@ bool notifier::_is_notification_viable_normal(reason_type type
     return false;
   }
 
+#ifdef LEGACY_CONF
+  uint32_t interval_length = config->interval_length();
+#else
+  uint32_t interval_length = pb_config.interval_length();
+#endif
   if (_first_notification_delay > 0 && !_notification[cat_normal] &&
       get_last_hard_state_change() +
-              _first_notification_delay * config->interval_length() >
+              _first_notification_delay * interval_length >
           now) {
     engine_logger(dbg_notifications, more)
         << "This notifier is configured with a first notification delay, we "
            "won't send notification until timestamp "
-        << (_first_notification_delay * config->interval_length());
+        << (_first_notification_delay * interval_length);
     SPDLOG_LOGGER_DEBUG(
         notifications_logger,
         "This notifier is configured with a first notification delay, we "
         "won't send notification until timestamp {}",
-        _first_notification_delay * config->interval_length());
+        _first_notification_delay * interval_length);
     return false;
   }
 
@@ -399,19 +407,17 @@ bool notifier::_is_notification_viable_normal(reason_type type
             _last_notification);
         return false;
       } else if (notification_interval > 0) {
-        if (_last_notification +
-                notification_interval * config->interval_length() >
+        if (_last_notification + notification_interval * interval_length >
             now) {
           engine_logger(dbg_notifications, more)
               << "This notifier problem has been sent at " << _last_notification
               << " so it won't be sent until "
-              << (notification_interval * config->interval_length());
+              << (notification_interval * interval_length);
           SPDLOG_LOGGER_DEBUG(
               notifications_logger,
               "This notifier problem has been sent at {} so it won't be sent "
               "until {}",
-              _last_notification,
-              notification_interval * config->interval_length());
+              _last_notification, notification_interval * interval_length);
           return false;
         }
       }
@@ -431,8 +437,13 @@ bool notifier::_is_notification_viable_recovery(reason_type type
   bool retval{true};
   bool send_later{false};
 
+#ifdef LEGACY_CONF
+  bool enable_notifications = config->enable_notifications();
+#else
+  bool enable_notifications = pb_config.enable_notifications();
+#endif
   /* are notifications enabled? */
-  if (!config->enable_notifications()) {
+  if (!enable_notifications) {
     engine_logger(dbg_notifications, more)
         << "Notifications are disabled, so notifications will "
            "not be sent out.";
@@ -456,10 +467,20 @@ bool notifier::_is_notification_viable_recovery(reason_type type
     std::time_t now;
     std::time(&now);
 
+#ifdef LEGACY_CONF
+    uint32_t interval_length = config->interval_length();
+    bool use_send_recovery_notifications_anyways =
+        config->use_send_recovery_notifications_anyways();
+#else
+    uint32_t interval_length = pb_config.interval_length();
+    bool use_send_recovery_notifications_anyways =
+        pb_config.send_recovery_notifications_anyways();
+#endif
+
     // if use_send_recovery_notifications_anyways flag is set, we don't take
     // timeperiod into account for recovery
     if (!check_time_against_period_for_notif(now, tp)) {
-      if (config->use_send_recovery_notifications_anyways()) {
+      if (use_send_recovery_notifications_anyways) {
         SPDLOG_LOGGER_DEBUG(notifications_logger,
                             "send_recovery_notifications_anyways flag enabled, "
                             "recovery notification is viable even if we are "
@@ -523,7 +544,7 @@ bool notifier::_is_notification_viable_recovery(reason_type type
       retval = false;
       send_later = false;
     } else if (get_last_hard_state_change() +
-                   _recovery_notification_delay * config->interval_length() >
+                   _recovery_notification_delay * interval_length >
                now) {
       engine_logger(dbg_notifications, more)
           << "This notifier is configured with a recovery notification delay. "
@@ -591,8 +612,13 @@ bool notifier::_is_notification_viable_acknowledgement(
     return true;
   }
 
+#ifdef LEGACY_CONF
+  bool enable_notifications = config->enable_notifications();
+#else
+  bool enable_notifications = pb_config.enable_notifications();
+#endif
   /* are notifications enabled? */
-  if (!config->enable_notifications()) {
+  if (!enable_notifications) {
     engine_logger(dbg_notifications, more)
         << "Notifications are disabled, so notifications will "
            "not be sent out.";
@@ -641,7 +667,12 @@ bool notifier::_is_notification_viable_flapping(reason_type type,
   }
 
   /* are notifications enabled? */
-  if (!config->enable_notifications()) {
+#ifdef LEGACY_CONF
+  bool enable_notifications = config->enable_notifications();
+#else
+  bool enable_notifications = pb_config.enable_notifications();
+#endif
+  if (!enable_notifications) {
     engine_logger(dbg_notifications, more)
         << "Notifications are disabled, so notifications will "
            "not be sent out.";
@@ -752,7 +783,12 @@ bool notifier::_is_notification_viable_downtime(reason_type type
   }
 
   /* are notifications enabled? */
-  if (!config->enable_notifications()) {
+#ifdef LEGACY_CONF
+  bool enable_notifications = config->enable_notifications();
+#else
+  bool enable_notifications = pb_config.enable_notifications();
+#endif
+  if (!enable_notifications) {
     engine_logger(dbg_notifications, more)
         << "Notifications are disabled, so notifications will "
            "not be sent out.";
@@ -773,7 +809,7 @@ bool notifier::_is_notification_viable_downtime(reason_type type
     return false;
   }
 
-  if (!config->enable_notifications()) {
+  if (!enable_notifications) {
     engine_logger(dbg_notifications, more)
         << "Notifications are disabled, so notifications won't be sent out.";
     SPDLOG_LOGGER_DEBUG(
@@ -824,7 +860,12 @@ bool notifier::_is_notification_viable_custom(reason_type type
   }
 
   /* are notifications enabled? */
-  if (!config->enable_notifications()) {
+#ifdef LEGACY_CONF
+  bool enable_notifications = config->enable_notifications();
+#else
+  bool enable_notifications = pb_config.enable_notifications();
+#endif
+  if (!enable_notifications) {
     engine_logger(dbg_notifications, more)
         << "Notifications are disabled, so notifications will "
            "not be sent out.";
@@ -1646,9 +1687,13 @@ time_t notifier::get_next_notification_time(time_t offset) {
                      interval_to_use);
 
   /* calculate next notification time */
+#ifdef LEGACY_CONF
+  uint32_t interval_length = config->interval_length();
+#else
+  uint32_t interval_length = pb_config.interval_length();
+#endif
   time_t next_notification{
-      offset +
-      static_cast<time_t>(interval_to_use * config->interval_length())};
+      offset + static_cast<time_t>(interval_to_use * interval_length)};
 
   return next_notification;
 }

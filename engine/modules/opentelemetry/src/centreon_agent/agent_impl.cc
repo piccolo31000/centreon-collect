@@ -20,7 +20,6 @@
 
 #include "centreon_agent/agent_impl.hh"
 
-#include "conf_helper.hh"
 #include "otl_fmt.hh"
 
 #include "com/centreon/engine/command_manager.hh"
@@ -63,8 +62,8 @@ agent_impl<bireactor_class>::agent_impl(
       _class_name(class_name),
       _conf(conf),
       _metric_handler(handler),
-      _logger(logger),
       _write_pending(false),
+      _logger(logger),
       _alive(true) {
   SPDLOG_LOGGER_DEBUG(logger, "create {} this={:p}", _class_name,
                       static_cast<const void*>(this));
@@ -179,7 +178,7 @@ void agent_impl<bireactor_class>::_calc_and_send_config_if_needed() {
             return add_command_to_agent_conf(cmd_name, cmd_line, service, cnf,
                                              logger, peer);
           },
-          _logger);
+          _whitelist_cache, _logger);
       if (!at_least_one_command_found) {
         SPDLOG_LOGGER_ERROR(_logger, "no command found for agent {}",
                             get_peer());

@@ -70,8 +70,6 @@ ${SRC_DIR}/centreon_agent/agent_impl.cc
 ${SRC_DIR}/centreon_agent/agent_reverse_client.cc
 ${SRC_DIR}/centreon_agent/agent_service.cc
 ${SRC_DIR}/centreon_agent/to_agent_connector.cc
-${SRC_DIR}/data_point_fifo.cc
-${SRC_DIR}/data_point_fifo_container.cc
 ${SRC_DIR}/grpc_config.cc
 ${SRC_DIR}/host_serv_extractor.cc
 ${SRC_DIR}/open_telemetry.cc
@@ -90,6 +88,8 @@ target_precompile_headers(opentelemetry PRIVATE precomp_inc/precomp.hh)
 # set(EXTERNALCMD_MODULE "${EXTERNALCMD_MODULE}" PARENT_SCOPE)
 target_link_libraries(opentelemetry   
   spdlog::spdlog
+  -L${PROTOBUF_LIB_DIR}
+  protobuf
   -L${Boost_LIBRARY_DIR_RELEASE}
   boost_program_options)
 

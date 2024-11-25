@@ -21,7 +21,6 @@
 
 #include <memory>
 
-#include "com/centreon/broker/sql/database_config.hh"
 #include "com/centreon/broker/sql/mysql.hh"
 #include "com/centreon/common/pool.hh"
 
@@ -71,7 +70,8 @@ class rebuilder {
   ~rebuilder() noexcept;
   rebuilder(const rebuilder&) = delete;
   rebuilder& operator=(const rebuilder&) = delete;
-  void rebuild_graphs(const std::shared_ptr<io::data>& d);
+  void rebuild_graphs(const std::shared_ptr<io::data>& d,
+                      const std::shared_ptr<spdlog::logger>& logger);
 };
 }  // namespace unified_sql
 

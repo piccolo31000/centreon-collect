@@ -17,9 +17,9 @@ on:
 
 jobs:
   release-trigger-builds:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
 
       - name: Install Github CLI
         run: |
@@ -47,8 +47,8 @@ jobs:
           #COMPONENTS_OSS_FULL=("awie" "dsm" "gorgone" "ha" "open-tickets" "web")
           #COMPONENTS_MODULES=("anomaly-detection" "autodiscovery" "bam" "cloud-business-extensions" "cloud-extensions" "it-edition-extensions" "lm" "map" "mbi" "ppm")
           #COMPONENTS_MODULES_FULL=("anomaly-detection" "autodiscovery" "bam" "cloud-business-extensions" "cloud-extensions" "it-edition-extensions" "lm" "map" "mbi" "ppm" "php-pecl-gnupg" "sourceguardian-loader")
-          COMPONENTS_COLLECT=("Centreon collect")
-          COMPONENTS_COLLECT_FULL=("Centreon collect")
+          COMPONENTS_COLLECT=("Centreon collect" "gorgone")
+          COMPONENTS_COLLECT_FULL=("Centreon collect" "gorgone")
           RUNS_URL=""
 
           # Accept release prefixed or develop branches, nothing else

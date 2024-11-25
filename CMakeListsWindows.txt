@@ -16,6 +16,9 @@
 # For more information : contact@centreon.com
 #
 
+#in order to make fmt compile
+add_definitions("/utf-8")
+
 # When we build from cache (CI), we don't use vcpkg cmaketool, so we tell to cmake where to find packages info
 if (BUILD_FROM_CACHE)
   LIST(APPEND CMAKE_PREFIX_PATH "build_windows/vcpkg_installed/x64-windows")
@@ -37,6 +40,9 @@ add_definitions("-DCOLLECT_MAJOR=${COLLECT_MAJOR}")
 add_definitions("-DCOLLECT_MINOR=${COLLECT_MINOR}")
 add_definitions("-DCOLLECT_PATCH=${COLLECT_PATCH}")
 
+if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set (CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif()
 
 # There is a bug with grpc. It is not put in the triplet directory. So we have
 # to search for its plugin.
@@ -53,6 +59,9 @@ set(VCPKG_INCLUDE_DIR ${OPENSSL_INCLUDE_DIR})
 include(GNUInstallDirs)
 
 option(WITH_TESTING "Build unit tests." OFF)
+option(WITH_BUILD_AGENT_INSTALLER "Build agent windows installer." OFF)
+option(WITH_BUILD_AGENT_MODIFIER  "Build agent windows config update program (not needed if WITH_BUILD_INSTALLER=ON)." OFF)
+
 
 set(protobuf_MODULE_COMPATIBLE True)
 

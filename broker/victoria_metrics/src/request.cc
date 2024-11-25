@@ -69,7 +69,6 @@ request::request(boost::beast::http::verb method,
 
 static constexpr std::string_view _sz_metric = "metric,id=";
 static constexpr std::string_view _sz_status = "status,id=";
-static constexpr std::string_view _sz_space = " ";
 static constexpr std::string_view _sz_name = ",name=";
 static constexpr std::string_view _sz_unit = ",unit=";
 static constexpr std::string_view _sz_host_id = ",host_id=";
@@ -94,7 +93,7 @@ void request::add_metric(const storage::pb_metric& metric) {
 
 void request::add_status(const storage::pb_status& status) {
   const Status status_obj = status.obj();
-  if (status_obj.state() < 0 || status_obj.state() > 2) {
+  if (status_obj.state() > 2) {
     if (status_obj.state() !=
         3) {  // we don't write unknown but it's not an error
       SPDLOG_LOGGER_ERROR(_logger, "unknown state: {}", status_obj.state());

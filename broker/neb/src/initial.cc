@@ -27,7 +27,6 @@
 #include "com/centreon/engine/downtimes/service_downtime.hh"
 #include "com/centreon/engine/globals.hh"
 #include "com/centreon/engine/host.hh"
-#include "com/centreon/engine/hostdependency.hh"
 #include "com/centreon/engine/nebcallbacks.hh"
 #include "com/centreon/engine/nebstructs.hh"
 #include "com/centreon/engine/objects.hh"
@@ -72,7 +71,6 @@ static void send_custom_variables_list(
       if (cit->second.is_sent()) {
         // Fill callback struct.
         nebstruct_custom_variable_data nscvd;
-        memset(&nscvd, 0, sizeof(nscvd));
         nscvd.type = NEBTYPE_HOSTCUSTOMVARIABLE_ADD;
         nscvd.timestamp.tv_sec = time(nullptr);
         nscvd.var_name = const_cast<char*>(name.c_str());
@@ -98,13 +96,13 @@ static void send_custom_variables_list(
       std::string name{cit->first};
       if (cit->second.is_sent()) {
         // Fill callback struct.
-        nebstruct_custom_variable_data nscvd;
-        memset(&nscvd, 0, sizeof(nscvd));
-        nscvd.type = NEBTYPE_SERVICECUSTOMVARIABLE_ADD;
-        nscvd.timestamp.tv_sec = time(nullptr);
-        nscvd.var_name = const_cast<char*>(name.c_str());
-        nscvd.var_value = const_cast<char*>(cit->second.value().c_str());
-        nscvd.object_ptr = it->second.get();
+        nebstruct_custom_variable_data nscvd{
+            .type = NEBTYPE_SERVICECUSTOMVARIABLE_ADD,
+            .timestamp = {time(nullptr), 0},
+            .var_name = std::string_view(name),
+            .var_value = std::string_view(cit->second.value()),
+            .object_ptr = it->second.get(),
+        };
 
         // Callback.
         sender(NEBCALLBACK_CUSTOM_VARIABLE_DATA, &nscvd);
@@ -171,48 +169,6 @@ static void send_downtimes_list(neb_sender sender = neb::callback_downtime) {
  */
 static void send_pb_downtimes_list() {
   send_downtimes_list(neb::callback_pb_downtime);
-}
-
-/**
- *  Send to the global publisher the list of host dependencies within Nagios.
- */
-static void send_host_dependencies_list(
-    neb_sender callbackfct = neb::callback_dependency) {
-  // Start log message.
-  neb_logger->info("init: beginning host dependencies dump");
-
-  try {
-    // Loop through all dependencies.
-    for (hostdependency_mmap::const_iterator
-             it{com::centreon::engine::hostdependency::hostdependencies
-                    .begin()},
-         end{com::centreon::engine::hostdependency::hostdependencies.end()};
-         it != end; ++it) {
-      // Fill callback struct.
-      nebstruct_adaptive_dependency_data nsadd;
-      memset(&nsadd, 0, sizeof(nsadd));
-      nsadd.type = NEBTYPE_HOSTDEPENDENCY_ADD;
-      nsadd.object_ptr = it->second.get();
-
-      // Callback.
-      callbackfct(NEBCALLBACK_ADAPTIVE_DEPENDENCY_DATA, &nsadd);
-    }
-  } catch (std::exception const& e) {
-    neb_logger->info("init: error occurred while dumping host dependencies: {}",
-                     e.what());
-  } catch (...) {
-    neb_logger->error(
-        "init: unknown error occurred while dumping host dependencies");
-  }
-
-  // End log message.
-  neb_logger->info("init: end of host dependencies dump");
-
-  return;
-}
-
-static void send_pb_host_dependencies_list() {
-  send_host_dependencies_list(neb::callback_pb_dependency);
 }
 
 /**
@@ -332,19 +288,15 @@ static void send_host_parents_list(neb_sender sender = neb::callback_relation) {
 
   try {
     // Loop through all hosts.
-    for (host_map::iterator it{com::centreon::engine::host::hosts.begin()},
-         end{com::centreon::engine::host::hosts.end()};
-         it != end; ++it) {
+    for (const auto& [_, sptr_host] : com::centreon::engine::host::hosts) {
       // Loop through all parents.
-      for (host_map_unsafe::iterator pit{it->second->parent_hosts.begin()},
-           pend{it->second->parent_hosts.end()};
-           pit != pend; ++pit) {
+      for (const auto& [_, sptr_host_parent] : sptr_host->parent_hosts) {
         // Fill callback struct.
         nebstruct_relation_data nsrd;
         memset(&nsrd, 0, sizeof(nsrd));
         nsrd.type = NEBTYPE_PARENT_ADD;
-        nsrd.hst = pit->second;
-        nsrd.dep_hst = it->second.get();
+        nsrd.hst = sptr_host_parent.get();
+        nsrd.dep_hst = sptr_host.get();
 
         // Callback.
         sender(NEBTYPE_PARENT_ADD, &nsrd);
@@ -367,49 +319,6 @@ static void send_host_parents_list(neb_sender sender = neb::callback_relation) {
  */
 static void send_pb_host_parents_list() {
   send_host_parents_list(neb::callback_pb_relation);
-}
-
-/**
- *  Send to the global publisher the list of service dependencies within
- *  Nagios.
- */
-static void send_service_dependencies_list(
-    neb_sender sender_fct = neb::callback_dependency) {
-  // Start log message.
-  neb_logger->info("init: beginning service dependencies dump");
-
-  try {
-    // Loop through all dependencies.
-    for (servicedependency_mmap::const_iterator
-             it{com::centreon::engine::servicedependency::servicedependencies
-                    .begin()},
-         end{com::centreon::engine::servicedependency::servicedependencies
-                 .end()};
-         it != end; ++it) {
-      // Fill callback struct.
-      nebstruct_adaptive_dependency_data nsadd;
-      memset(&nsadd, 0, sizeof(nsadd));
-      nsadd.type = NEBTYPE_SERVICEDEPENDENCY_ADD;
-      nsadd.object_ptr = it->second.get();
-
-      // Callback.
-      sender_fct(NEBCALLBACK_ADAPTIVE_DEPENDENCY_DATA, &nsadd);
-    }
-  } catch (std::exception const& e) {
-    neb_logger->error(
-        "init: error occurred while dumping service dependencies: {}",
-        e.what());
-  } catch (...) {
-    neb_logger->error(
-        "init: unknown error occurred while dumping service dependencies");
-  }
-
-  // End log message.
-  neb_logger->info("init: end of service dependencies dump");
-}
-
-static void send_pb_service_dependencies_list() {
-  send_service_dependencies_list(neb::callback_pb_dependency);
 }
 
 /**
@@ -541,8 +450,6 @@ void neb::send_initial_configuration() {
   send_host_parents_list();
   send_host_group_list();
   send_service_group_list();
-  send_host_dependencies_list();
-  send_service_dependencies_list();
   send_instance_configuration();
 }
 
@@ -566,7 +473,5 @@ void neb::send_initial_pb_configuration() {
   send_pb_host_parents_list();
   send_pb_host_group_list();
   send_pb_service_group_list();
-  send_pb_host_dependencies_list();
-  send_pb_service_dependencies_list();
   send_pb_instance_configuration();
 }

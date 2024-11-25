@@ -19,7 +19,6 @@
 #ifndef CCB_CONFIG_STATE_HH
 #define CCB_CONFIG_STATE_HH
 
-#include <fmt/format.h>
 
 #include "bbdo/bbdo/bbdo_version.hh"
 #include "com/centreon/broker/config/endpoint.hh"
@@ -123,7 +122,7 @@ class state {
   void add_module(std::string module);
   std::list<std::string> const& module_list() const noexcept;
   std::map<std::string, std::string>& params() noexcept;
-  std::map<std::string, std::string> const& params() const noexcept;
+  const std::map<std::string, std::string>& params() const noexcept;
   void poller_id(int id) noexcept;
   int poller_id() const noexcept;
   void pool_size(int size) noexcept;

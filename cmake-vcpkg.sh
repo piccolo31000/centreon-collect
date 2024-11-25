@@ -104,6 +104,9 @@ if [ -r /etc/centos-release -o -r /etc/almalinux-release ] ; then
     elif [[ "$maj" == "centos7" ]] ; then
       yum -y install epel-release cmake3
       cmake='cmake3'
+    elif [[ "$maj" == "centos9" ]] ; then
+      dnf config-manager --set-enabled crb
+      dnf -y install epel-release
     else
       dnf -y install cmake
       cmake='cmake'
@@ -145,6 +148,7 @@ if [ -r /etc/centos-release -o -r /etc/almalinux-release ] ; then
     openssl-devel
     libssh2-devel
     libcurl-devel
+    tar
     zlib-devel
   )
   if [[ "$maj" == 'centos8' ]] ; then
@@ -204,6 +208,7 @@ elif [ -r /etc/issue ] ; then
       libgcrypt20-dev
       libgnutls28-dev
       liblua5.3-dev
+      libmariadb-dev
       libperl-dev
       librrd-dev
       libssh2-1-dev
@@ -258,7 +263,7 @@ fi
 
 if [ ! -d vcpkg ] ; then
   echo "No vcpkg directory. Cloning the repo"
-  git clone --depth 1 --single-branch --no-tags https://github.com/Microsoft/vcpkg.git
+  git clone --depth 1 -b 2024.01.12 https://github.com/Microsoft/vcpkg.git
   ./vcpkg/bootstrap-vcpkg.sh
 fi
 

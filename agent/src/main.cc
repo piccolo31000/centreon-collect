@@ -21,6 +21,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "config.hh"
+#include "drive_size.hh"
 #include "streaming_client.hh"
 #include "streaming_server.hh"
 
@@ -81,6 +82,8 @@ static std::string read_file(const std::string& file_path) {
       ss << file.rdbuf();
       file.close();
       return ss.str();
+    } else {
+      SPDLOG_LOGGER_ERROR(g_logger, "fail to open {}", file_path);
     }
   } catch (const std::exception& e) {
     SPDLOG_LOGGER_ERROR(g_logger, "fail to read {}: {}", file_path, e.what());
@@ -172,7 +175,7 @@ int main(int argc, char* argv[]) {
         read_file(conf->get_public_cert_file()),
         read_file(conf->get_private_key_file()),
         read_file(conf->get_ca_certificate_file()), conf->get_ca_name(), true,
-        30);
+        30, conf->get_second_max_reconnect_backoff());
 
   } catch (const std::exception& e) {
     SPDLOG_CRITICAL("fail to parse input params: {}", e.what());
@@ -193,6 +196,9 @@ int main(int argc, char* argv[]) {
     SPDLOG_LOGGER_CRITICAL(g_logger, "unhandled exception: {}", e.what());
     return -1;
   }
+
+  // kill check_drive_size thread if used
+  check_drive_size::thread_kill();
 
   SPDLOG_LOGGER_INFO(g_logger, "centreon-monitoring-agent end");
 

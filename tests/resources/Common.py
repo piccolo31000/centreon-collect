@@ -33,24 +33,39 @@ import string
 from dateutil import parser
 from datetime import datetime
 import pymysql.cursors
-from robot.libraries.BuiltIn import BuiltIn
+from robot.libraries.BuiltIn import BuiltIn,RobotNotRunningError
 from concurrent import futures
 import grpc
 import grpc_stream_pb2_grpc
 
 
+def import_robot_resources():
+    global DB_NAME_STORAGE, VAR_ROOT, ETC_ROOT, DB_NAME_CONF, DB_USER, DB_PASS, DB_HOST, DB_PORT
+    try:
+        BuiltIn().import_resource('db_variables.resource')
+        DB_NAME_STORAGE = BuiltIn().get_variable_value("${DBName}")
+        DB_NAME_CONF = BuiltIn().get_variable_value("${DBNameConf}")
+        DB_USER = BuiltIn().get_variable_value("${DBUser}")
+        DB_PASS = BuiltIn().get_variable_value("${DBPass}")
+        DB_HOST = BuiltIn().get_variable_value("${DBHost}")
+        DB_PORT = BuiltIn().get_variable_value("${DBPort}")
+        VAR_ROOT = BuiltIn().get_variable_value("${VarRoot}")
+        ETC_ROOT = BuiltIn().get_variable_value("${EtcRoot}")
+    except RobotNotRunningError:
+        # Handle this case if Robot Framework is not running
+        print("Robot Framework is not running. Skipping resource import.")
+
+DB_NAME_STORAGE = ""
+DB_NAME_CONF = ""
+DB_USER = ""
+DB_PASS = ""
+DB_HOST = ""
+DB_PORT = ""
+VAR_ROOT = ""
+ETC_ROOT = ""
+
+import_robot_resources()
 TIMEOUT = 30
-
-BuiltIn().import_resource('db_variables.resource')
-DB_NAME_STORAGE = BuiltIn().get_variable_value("${DBName}")
-DB_NAME_CONF = BuiltIn().get_variable_value("${DBNameConf}")
-DB_USER = BuiltIn().get_variable_value("${DBUser}")
-DB_PASS = BuiltIn().get_variable_value("${DBPass}")
-DB_HOST = BuiltIn().get_variable_value("${DBHost}")
-DB_PORT = BuiltIn().get_variable_value("${DBPort}")
-VAR_ROOT = BuiltIn().get_variable_value("${VarRoot}")
-ETC_ROOT = BuiltIn().get_variable_value("${EtcRoot}")
-
 
 def ctn_parse_tests_params():
     params = os.environ.get("TESTS_PARAMS")
@@ -190,9 +205,10 @@ def ctn_extract_date_from_log(line: str):
         return None
 
 
-#  When you use Get Current Date with exclude_millis=True
-#  it rounds result to nearest lower or upper second
 def ctn_get_round_current_date():
+    """
+    Returns the current date round to the nearest lower second as a timestamp.
+    """
     return int(time.time())
 
 
@@ -319,7 +335,12 @@ def ctn_create_certificate(host: str, cert: str):
 
 
 def ctn_run_env():
-    return getoutput("echo $RUN_ENV | awk '{print $1}'")
+    """
+    ctn_run_env
+
+    Get RUN_ENV env variable content
+    """
+    return os.environ.get('RUN_ENV', '')
 
 
 def ctn_start_mysql():
@@ -554,8 +575,13 @@ def ctn_clear_commands_status():
 
 
 def ctn_set_command_status(cmd, status):
-    if os.path.exists("/tmp/states"):
-        f = open("/tmp/states")
+    if os.environ.get("RUN_ENV","") == "WSL":
+        state_path = "states"
+    else:
+        state_path = "/tmp/states"
+
+    if os.path.exists(state_path):
+        f = open(state_path)
         lines = f.readlines()
     else:
         lines = []
@@ -571,9 +597,8 @@ def ctn_set_command_status(cmd, status):
 
     if not done:
         lines.append("{}=>{}\n".format(cmd, status))
-    f = open("/tmp/states", "w")
-    f.writelines(lines)
-    f.close()
+    with open(state_path, "w") as f:
+        f.writelines(lines)
 
 
 def ctn_truncate_resource_host_service():
@@ -614,7 +639,9 @@ def ctn_check_service_resource_status_with_timeout(hostname: str, service_desc: 
                 if len(result) > 0 and result[0]['status'] is not None and int(result[0]['status']) == int(status):
                     logger.console(
                         f"status={result[0]['status']} and status_confirmed={result[0]['status_confirmed']}")
-                    if state_type == 'HARD' and int(result[0]['status_confirmed']) == 1:
+                    if state_type == 'ANY':
+                        return True
+                    elif state_type == 'HARD' and int(result[0]['status_confirmed']) == 1:
                         return True
                     elif state_type == 'SOFT' and int(result[0]['status_confirmed']) == 0:
                         return True
@@ -652,6 +679,14 @@ def ctn_check_acknowledgement_with_timeout(hostname: str, service_desc: str, ent
 
 
 def ctn_check_acknowledgement_is_deleted_with_timeout(ack_id: int, timeout: int, which='COMMENTS'):
+    """
+    Check if an acknowledgement is deleted in comments, acknowledgements or both
+
+    Args:
+        ack_id (int): The acknowledgement id
+        timeout (int): The timeout in seconds
+        which (str): The table to check. It can be 'comments', 'acknowledgements' or 'BOTH'
+    """
     limit = time.time() + timeout
     while time.time() < limit:
         connection = pymysql.connect(host=DB_HOST,
@@ -667,7 +702,6 @@ def ctn_check_acknowledgement_is_deleted_with_timeout(ack_id: int, timeout: int,
                 cursor.execute(
                     f"SELECT c.deletion_time, a.entry_time, a.deletion_time FROM comments c LEFT JOIN acknowledgements a ON c.host_id=a.host_id AND c.service_id=a.service_id AND c.entry_time=a.entry_time WHERE c.entry_type=4 AND a.acknowledgement_id={ack_id}")
                 result = cursor.fetchall()
-                logger.console(f"### {result}")
                 if len(result) > 0 and result[0]['deletion_time'] is not None and int(result[0]['deletion_time']) >= int(result[0]['entry_time']):
                     if which == 'BOTH':
                         if result[0]['a.deletion_time']:
@@ -942,9 +976,11 @@ def ctn_check_service_downtime_with_timeout(hostname: str, service_desc: str, en
         with connection:
             with connection.cursor() as cursor:
                 if enabled != '0':
-                    cursor.execute("SELECT s.scheduled_downtime_depth FROM downtimes d INNER JOIN hosts h ON d.host_id=h.host_id INNER JOIN services s ON d.service_id=s.service_id WHERE d.deletion_time is null AND s.description='{}' AND h.name='{}'".format(
-                        service_desc, hostname))
+                    logger.console(f"SELECT s.scheduled_downtime_depth FROM downtimes d INNER JOIN hosts h ON d.host_id=h.host_id INNER JOIN services s ON d.service_id=s.service_id WHERE d.deletion_time is null AND s.description='{service_desc}' AND h.name='{hostname}'")
+                    cursor.execute(f"SELECT s.scheduled_downtime_depth FROM downtimes d INNER JOIN hosts h ON d.host_id=h.host_id INNER JOIN services s ON d.service_id=s.service_id WHERE d.deletion_time is null AND s.description='{service_desc}' AND h.name='{hostname}'")
                     result = cursor.fetchall()
+                    if len(result) > 0:
+                        logger.console(f"scheduled_downtime_depth: {result[0]['scheduled_downtime_depth']}")
                     if len(result) == int(enabled) and result[0]['scheduled_downtime_depth'] is not None and result[0]['scheduled_downtime_depth'] == int(enabled):
                         return True
                     if (len(result) > 0):
@@ -1028,7 +1064,7 @@ def ctn_check_service_check_status_with_timeout(hostname: str, service_desc: str
 
 def ctn_check_service_output_resource_status_with_timeout(hostname: str, service_desc: str, timeout: int, min_last_check: int, status: int, status_type: str,  output:str):
     """
-    ctn_check_host_output_resource_status_with_timeout
+    ctn_check_service_output_resource_status_with_timeout
 
     check if resource checks infos of an host have been updated
 
@@ -1071,7 +1107,19 @@ def ctn_check_service_output_resource_status_with_timeout(hostname: str, service
 
 
 
-def ctn_check_host_check_with_timeout(hostname: str, timeout: int, command_line: str):
+def ctn_check_host_check_with_timeout(hostname: str, start: int, timeout: int):
+    """
+    ctl_check_host_check_with_timeout
+
+    Checks that the last_check is after the start timestamp.
+
+    Args:
+        hostname: the host concerned by the check
+        start: a timestamp that should be approximatively the date of the check.
+        timeout: A timeout.
+
+    Returns: True on success.
+    """
     limit = time.time() + timeout
     while time.time() < limit:
         connection = pymysql.connect(host=DB_HOST,
@@ -1085,12 +1133,13 @@ def ctn_check_host_check_with_timeout(hostname: str, timeout: int, command_line:
         with connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    f"SELECT command_line FROM hosts WHERE name='{hostname}'")
+                    f"SELECT last_check FROM resources WHERE name='{hostname}'")
                 result = cursor.fetchall()
-                if len(result) > 0:
+                if len(result) > 0 and len(result[0]) > 0 and result[0]['last_check'] is not None:
                     logger.console(
-                        f"command_line={result[0]['command_line']} ")
-                    if result[0]['command_line'] is not None and command_line in result[0]['command_line']:
+                        f"last_check={result[0]['last_check']} ")
+                    last_check = int(result[0]['last_check'])
+                    if last_check > start:
                         return True
         time.sleep(1)
     return False
@@ -1128,6 +1177,9 @@ def ctn_check_host_check_status_with_timeout(hostname: str, timeout: int, min_la
                         f"last_check={result[0]['last_check']} state={result[0]['state']} output={result[0]['output']} ")
                     if result[0]['last_check'] is not None and result[0]['last_check'] >= min_last_check and output in result[0]['output'] and result[0]['state'] == state:
                         return True
+                    else:
+                        logger.console(
+                                f"last_check: {result[0]['last_check']} - min_last_check: {min_last_check} - expected output: {output} - output: {result[0]['output']} - expected state: {state} - state: {result[0]['state']}")
         time.sleep(1)
     return False
 
@@ -1215,7 +1267,7 @@ def ctn_delete_service_downtime(hst: str, svc: str):
 
     logger.console(f"delete downtime internal_id={did}")
     cmd = f"[{now}] DEL_SVC_DOWNTIME;{did}\n"
-    f = open(VAR_ROOT + "/lib/centreon-engine/config0/rw/centengine.cmd", "w")
+    f = open(f"{VAR_ROOT}/lib/centreon-engine/config0/rw/centengine.cmd", "w")
     f.write(cmd)
     f.close()
 
@@ -1422,7 +1474,11 @@ def ctn_check_number_of_resources_monitored_by_poller_is(poller: int, value: int
 
 def ctn_check_number_of_downtimes(expected: int, start, timeout: int):
     limit = time.time() + timeout
-    d = parser.parse(start).timestamp()
+    try:
+        d = parser.parse(start)
+    except:
+        d = datetime.fromtimestamp(start)
+    d = d.timestamp()
     while time.time() < limit:
         connection = pymysql.connect(host=DB_HOST,
                                      user=DB_USER,
@@ -1432,6 +1488,8 @@ def ctn_check_number_of_downtimes(expected: int, start, timeout: int):
                                      cursorclass=pymysql.cursors.DictCursor)
         with connection:
             with connection.cursor() as cursor:
+                logger.console(
+                    f"SELECT count(*) FROM downtimes WHERE start_time >= {d} AND deletion_time IS NULL")
                 cursor.execute(
                     f"SELECT count(*) FROM downtimes WHERE start_time >= {d} AND deletion_time IS NULL")
                 result = cursor.fetchall()
@@ -1460,6 +1518,7 @@ def ctn_check_number_of_relations_between_hostgroup_and_hosts(hostgroup: int, va
                     "SELECT count(*) FROM hosts_hostgroups WHERE hostgroup_id={}".format(hostgroup))
                 result = cursor.fetchall()
                 if len(result) > 0:
+                    logger.console(f"SELECT count(*) FROM hosts_hostgroups WHERE hostgroup_id={hostgroup} => {result[0]}")
                     if int(result[0]['count(*)']) == value:
                         return True
         time.sleep(1)
@@ -1635,56 +1694,6 @@ def ctn_check_types_in_resources(lst: list):
                             f"Value {t} not found in result of query 'select distinct type from resources'")
                         return False
                 return True
-    return False
-
-
-def ctn_check_host_dependencies(dep_host_id, host_id, dep_period, inherits_parent, notif_fail_opts, exec_fail_opts, timeout=TIMEOUT):
-    limit = time.time() + timeout
-    logger.console(
-        f"SELECT count(*) FROM hosts_hosts_dependencies WHERE dependent_host_id={dep_host_id} AND host_id={host_id} AND dependency_period='{dep_period}' AND inherits_parent={inherits_parent} AND notification_failure_options='{notif_fail_opts}' AND execution_failure_options='{exec_fail_opts}'")
-    while time.time() < limit:
-        connection = pymysql.connect(host=DB_HOST,
-                                     user=DB_USER,
-                                     password=DB_PASS,
-                                     database=DB_NAME_STORAGE,
-                                     charset='utf8mb4',
-                                     autocommit=True,
-                                     cursorclass=pymysql.cursors.DictCursor)
-
-        with connection:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT * FROM hosts_hosts_dependencies")
-                result = cursor.fetchall()
-                logger.console(result)
-                cursor.execute(
-                    f"SELECT count(*) FROM hosts_hosts_dependencies WHERE dependent_host_id={dep_host_id} AND host_id={host_id} AND dependency_period='{dep_period}' AND inherits_parent={inherits_parent} AND notification_failure_options='{notif_fail_opts}' AND execution_failure_options='{exec_fail_opts}'")
-                result = cursor.fetchall()
-                logger.console(result)
-                if len(result) > 0 and int(result[0]['count(*)']) > 0:
-                    return True
-                time.sleep(2)
-    return False
-
-
-def ctn_check_no_host_dependencies(timeout=TIMEOUT):
-    limit = time.time() + timeout
-    logger.console("SELECT count(*) FROM hosts_hosts_dependencies")
-    while time.time() < limit:
-        connection = pymysql.connect(host=DB_HOST,
-                                     user=DB_USER,
-                                     password=DB_PASS,
-                                     database=DB_NAME_STORAGE,
-                                     charset='utf8mb4',
-                                     autocommit=True,
-                                     cursorclass=pymysql.cursors.DictCursor)
-
-        with connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT count(*) FROM hosts_hosts_dependencies")
-                result = cursor.fetchall()
-                if len(result) > 0 and int(result[0]['count(*)']) == 0:
-                    return True
     return False
 
 
@@ -1940,3 +1949,47 @@ def ctn_compare_string_with_file(string_to_compare:str, file_path:str):
             return False
     return True
 
+
+
+def ctn_check_service_perfdata(host: str, serv: str, timeout: int, precision: float, expected: dict):
+    """
+    Check if performance data are near as expected.
+        host (str): The hostname of the service to check.
+        serv (str): The service name to check.
+        timeout (int): The timeout value for the check.
+        precision (float): The precision required for the performance data comparison.
+        expected (dict): A dictionary containing the expected performance data values.
+    """
+    limit = time.time() + timeout
+    query = f"""SELECT sub_query.metric_name, db.value FROM data_bin db JOIN
+            (SELECT m.metric_name, MAX(db.ctime) AS last_data, db.id_metric FROM data_bin db
+                JOIN metrics m ON db.id_metric = m.metric_id
+                JOIN index_data id ON id.id = m.index_id
+                WHERE id.host_name='{host}' AND id.service_description='{serv}'
+                GROUP BY m.metric_id) sub_query 
+            ON db.ctime = sub_query.last_data AND db.id_metric = sub_query.id_metric"""
+    while time.time() < limit:
+        connection = pymysql.connect(host=DB_HOST,
+                                     user=DB_USER,
+                                     password=DB_PASS,
+                                     database=DB_NAME_STORAGE,
+                                     charset='utf8mb4',
+                                     cursorclass=pymysql.cursors.DictCursor)
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                result = cursor.fetchall()
+                if len(result)  == len(expected):
+                    for res in result:
+                        logger.console(f"metric: {res['metric_name']}, value: {res['value']}")
+                        metric = res['metric_name']
+                        value = float(res['value'])
+                        if metric not in expected:
+                            logger.console(f"ERROR unexpected metric: {metric}")
+                            return False
+                        if abs(value - expected[metric]) > precision:
+                            logger.console(f"ERROR unexpected value for {metric}: {value}")
+                            return False
+                    return True
+        time.sleep(1)
+    return False

@@ -19,14 +19,15 @@
 set( SRC_COMMON
     check_test.cc 
     check_exec_test.cc
+    drive_size_test.cc
     scheduler_test.cc
     test_main.cc
 )
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
-  set(SRC ${SRC_COMMON} config_test.cc)
+  set(SRC ${SRC_COMMON} config_test.cc check_linux_cpu_test.cc)
 else()
-  set(SRC ${SRC_COMMON})
+  set(SRC ${SRC_COMMON} check_windows_cpu_test.cc check_uptime_test.cc)
 endif()
 
 

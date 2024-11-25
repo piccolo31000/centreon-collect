@@ -22,7 +22,7 @@
 
 #include "com/centreon/clib.hh"
 #include "com/centreon/connector/log.hh"
-#include "com/centreon/exceptions/basic.hh"
+#include "com/centreon/exceptions/msg_fmt.hh"
 #include "com/centreon/io/file_stream.hh"
 #include "com/centreon/misc/command_line.hh"
 
@@ -33,7 +33,8 @@ using system_clock = std::chrono::system_clock;
 using time_point = system_clock::time_point;
 using duration = system_clock::duration;
 
-static std::string perl_connector = BUILD_PATH "/connectors/perl/"
+static std::string perl_connector = BUILD_PATH
+    "/connectors/perl/"
     "centreon_connector_perl --debug --log-file=/data/dev/connector.log";
 
 static constexpr const char cmd1[] =
@@ -169,12 +170,12 @@ void process::start() {
   int out_pipe[2];
   if (pipe(in_pipe)) {
     char const* msg(strerror(errno));
-    throw basic_error() << msg;
+    throw msg_fmt("{}", msg);
   } else if (pipe(err_pipe)) {
     char const* msg(strerror(errno));
     close(in_pipe[0]);
     close(in_pipe[1]);
-    throw basic_error() << msg;
+    throw msg_fmt("{}", msg);
   }
   if (pipe(out_pipe)) {
     char const* msg(strerror(errno));
@@ -182,7 +183,7 @@ void process::start() {
     close(in_pipe[1]);
     close(err_pipe[0]);
     close(err_pipe[1]);
-    throw basic_error() << msg;
+    throw msg_fmt("{}", msg);
   }
 
   _io_context->notify_fork(asio::io_context::fork_prepare);
@@ -246,7 +247,7 @@ void process::start() {
     close(out_pipe[1]);
     close(err_pipe[0]);
     close(err_pipe[1]);
-    throw basic_error() << msg;
+    throw msg_fmt("{}", msg);
   }
 }
 
@@ -273,7 +274,7 @@ void process::write(const std::string& data, const duration& time_out) {
   std::unique_lock<std::mutex> l(_protect);
   _wait_for_completion.wait_for(l, time_out);
   if (buff->first) {
-    throw basic_error() << "fail to write:" << buff->first.message();
+    throw msg_fmt("fail to write:{}", buff->first.message());
   }
 }
 
@@ -298,8 +299,7 @@ std::string process::read_std_out(const duration& time_out) {
     }
     log::core()->error("fail to read from std_out:{}",
                        std::get<0>(*data).message());
-    throw basic_error() << "fail to read from std_out:"
-                        << std::get<0>(*data).message();
+    throw msg_fmt("fail to read from std_out:{}", std::get<0>(*data).message());
   }
   return std::string(std::get<2>(*data).data(),
                      std::get<2>(*data).data() + std::get<1>(*data));
@@ -326,8 +326,7 @@ std::string process::read_std_err(const duration& time_out) {
     }
     log::core()->error("fail to read from std_err:{}",
                        std::get<0>(*data).message());
-    throw basic_error() << "fail to read from std_err:"
-                        << std::get<0>(*data).message();
+    throw msg_fmt("fail to read from std_err:{}", std::get<0>(*data).message());
   }
   return std::string(std::get<2>(*data).data(),
                      std::get<2>(*data).data() + std::get<1>(*data));
@@ -365,7 +364,7 @@ class TestConnector : public testing::Test {
     return p.read_std_out(std::chrono::seconds(5));
   }
 
-  static void _write_file(char const* filename,
+  static void _write_file(const char* filename,
                           char const* content,
                           unsigned int size = 0) {
     // Check size.
@@ -373,16 +372,16 @@ class TestConnector : public testing::Test {
       size = strlen(content);
 
     // Open file.
-    FILE* f(fopen(filename, "w"));
+    FILE* f = fopen(filename, "w");
     if (!f)
-      throw basic_error() << "could not open file " << filename;
+      throw msg_fmt("could not open file {}", filename);
 
     // Write content.
     while (size > 0) {
       size_t wb(fwrite(content, sizeof(*content), size, f));
       if (ferror(f)) {
         fclose(f);
-        throw basic_error() << "error while writing file " << filename;
+        throw msg_fmt("error while writing file {}", filename);
       }
       size -= wb;
     }
@@ -405,8 +404,8 @@ TEST_F(TestConnector, EofOnStdin) {
 
 TEST_F(TestConnector, ExecuteModuleLoading) {
   // Write Perl script.
-  std::string script_path(com::centreon::io::file_stream::temp_path());
-  _write_file(script_path.c_str(),
+  const char* script_path = com::centreon::io::file_stream::temp_path();
+  _write_file(script_path,
               "#!/usr/bin/perl\n"
               "\n"
               "use Sys::Hostname;\n"
@@ -433,7 +432,7 @@ TEST_F(TestConnector, ExecuteModuleLoading) {
   int retval{wait_for_termination(*p)};
 
   // Remove temporary files.
-  remove(script_path.c_str());
+  remove(script_path);
 
   ASSERT_EQ(retval, 0);
   std::string expected(result, result + sizeof(result) - 1);
@@ -649,9 +648,9 @@ TEST_F(TestConnector, ExecuteSingleScriptLogFile) {
 
 TEST_F(TestConnector, ExecuteWithAdditionalCode) {
   // Write Perl script.
-  std::string script_path(com::centreon::io::file_stream::temp_path());
+  const char* script_path(com::centreon::io::file_stream::temp_path());
   _write_file(
-      script_path.c_str(),
+      script_path,
       "#!/usr/bin/perl\n"
       "\n"
       "print \"$Centreon::Test::company is $Centreon::Test::attribute\\n\";\n"
@@ -679,7 +678,7 @@ TEST_F(TestConnector, ExecuteWithAdditionalCode) {
   int retval{wait_for_termination(*p)};
 
   // Remove temporary files.
-  remove(script_path.c_str());
+  remove(script_path);
 
   ASSERT_EQ(retval, 0);
   std::string expected(result, result + sizeof(result) - 1);

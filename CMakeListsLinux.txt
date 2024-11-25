@@ -20,6 +20,8 @@
 # Global settings.
 #
 
+option(LEGACY_ENGINE
+       "Enable this option to compile the old Engine version." OFF)
 
 option(WITH_ASAN
        "Add the libasan to check memory leaks and other memory issues." OFF)
@@ -36,6 +38,12 @@ option(WITH_MALLOC_TRACE "compile centreon-malloc-trace library." OFF)
 
 option(DEBUG_ROBOT OFF)
 
+if(LEGACY_ENGINE)
+  message(STATUS "Collect compilation with the legacy Engine configuration library.")
+  add_definitions(-DLEGACY_CONF)
+else()
+  message(STATUS "Collect compilation with the Protobuf Engine configuration library.")
+endif()
 
 if(WITH_TSAN)
   set(CMAKE_CXX_FLAGS_DEBUG
@@ -164,7 +172,8 @@ include_directories(${CMAKE_SOURCE_DIR}
   ${VCPKG_INCLUDE_DIR}
   fmt::fmt
   spdlog::spdlog
-  ${CMAKE_SOURCE_DIR}/clib/inc)
+  ${CMAKE_SOURCE_DIR}/clib/inc
+  ${CMAKE_CURRENT_BINARY_DIR})
 
 add_subdirectory(clib)
 add_subdirectory(common)

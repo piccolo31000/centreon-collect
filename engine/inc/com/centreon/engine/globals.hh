@@ -29,7 +29,10 @@
 #include "com/centreon/engine/nebmods.hh"
 #include "com/centreon/engine/restart_stats.hh"
 #include "com/centreon/engine/utils.hh"
+#ifdef LEGACY_CONF
 #include "common/engine_legacy_conf/state.hh"
+#else
+#endif
 #include "common/log_v2/log_v2.hh"
 
 /* Start/Restart statistics */
@@ -47,9 +50,14 @@ extern std::shared_ptr<spdlog::logger> macros_logger;
 extern std::shared_ptr<spdlog::logger> notifications_logger;
 extern std::shared_ptr<spdlog::logger> process_logger;
 extern std::shared_ptr<spdlog::logger> runtime_logger;
+extern std::shared_ptr<spdlog::logger> otel_logger;
 
+#ifdef LEGACY_CONF
 extern com::centreon::engine::configuration::state* config;
-extern char* config_file;
+#else
+extern com::centreon::engine::configuration::State pb_config;
+#endif
+extern std::string config_file;
 
 extern com::centreon::engine::commands::command* global_host_event_handler_ptr;
 extern com::centreon::engine::commands::command*

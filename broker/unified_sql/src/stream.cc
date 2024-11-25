@@ -18,25 +18,12 @@
 #include "com/centreon/broker/unified_sql/stream.hh"
 
 #include <absl/strings/str_split.h>
-#include <absl/synchronization/mutex.h>
-#include <cassert>
-#include <cstring>
-#include <thread>
 
-#include "bbdo/events.hh"
-#include "bbdo/remove_graph_message.pb.h"
 #include "bbdo/storage/index_mapping.hh"
 #include "com/centreon/broker/cache/global_cache.hh"
-#include "com/centreon/broker/config/applier/state.hh"
 #include "com/centreon/broker/exceptions/shutdown.hh"
-#include "com/centreon/broker/multiplexing/publisher.hh"
 #include "com/centreon/broker/neb/events.hh"
-#include "com/centreon/broker/sql/mysql_bulk_stmt.hh"
-#include "com/centreon/broker/sql/mysql_result.hh"
-#include "com/centreon/broker/stats/center.hh"
 #include "com/centreon/broker/unified_sql/internal.hh"
-#include "com/centreon/common/perfdata.hh"
-#include "com/centreon/exceptions/msg_fmt.hh"
 #include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon::exceptions;
@@ -73,7 +60,7 @@ constexpr void (stream::*const stream::neb_processing_table[])(
     nullptr,
     nullptr,
     &stream::_process_host_check,
-    &stream::_process_host_dependency,
+    nullptr,
     &stream::_process_host_group,
     &stream::_process_host_group_member,
     &stream::_process_host,
@@ -84,7 +71,7 @@ constexpr void (stream::*const stream::neb_processing_table[])(
     &stream::_process_log,
     nullptr,
     &stream::_process_service_check,
-    &stream::_process_service_dependency,
+    nullptr,
     &stream::_process_service_group,
     &stream::_process_service_group_member,
     &stream::_process_service,
@@ -111,14 +98,16 @@ constexpr void (stream::*const stream::neb_processing_table[])(
     &stream::_process_pb_instance,
     &stream::_process_pb_acknowledgement,
     &stream::_process_pb_responsive_instance,
-    &stream::_process_pb_host_dependency,
-    &stream::_process_pb_service_dependency,
+    nullptr,
+    nullptr,
     &stream::_process_pb_host_group,
     &stream::_process_pb_host_group_member,
     &stream::_process_pb_service_group,
     &stream::_process_pb_service_group_member,
     &stream::_process_pb_host_parent,
-    nullptr  // pb_instance_configuration
+    nullptr,  // pb_instance_configuration
+    &stream::_process_pb_adaptive_service_status,
+    &stream::_process_pb_adaptive_host_status,
 };
 
 constexpr size_t neb_processing_table_size =
@@ -733,7 +722,7 @@ int32_t stream::write(const std::shared_ptr<io::data>& data) {
   } else if (cat == io::bbdo) {
     switch (elem) {
       case bbdo::de_rebuild_graphs:
-        _rebuilder.rebuild_graphs(data);
+        _rebuilder.rebuild_graphs(data, _logger_sql);
         break;
       case bbdo::de_remove_graphs:
         remove_graphs(data);
@@ -878,8 +867,7 @@ void stream::process_stop(const std::shared_ptr<io::data>& d) {
   _finish_action(-1, actions::hosts | actions::acknowledgements |
                          actions::modules | actions::downtimes |
                          actions::comments | actions::servicegroups |
-                         actions::hostgroups | actions::service_dependencies |
-                         actions::host_dependencies);
+                         actions::hostgroups);
 
   // Log message.
   _logger_sql->info("unified_sql: Disabling poller (id: {}, running: no)",
@@ -1397,22 +1385,6 @@ void stream::_init_statements() {
       "last_check=?,"                 // 9: last_check
       "output=? "                     // 10: output
       "WHERE id=? AND parent_id=?");  // 11, 12: service_id and host_id
-  const std::string host_exe_dep_query(
-      "INSERT INTO hosts_hosts_dependencies (dependent_host_id, host_id, "
-      "dependency_period, execution_failure_options, inherits_parent) "
-      "VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE "
-      "dependency_period=VALUES(dependency_period), "
-      "execution_failure_options=VALUES(execution_failure_options), "
-      "inherits_parent=VALUES(inherits_parent)");
-  _host_exe_dependency_insupdate = _mysql.prepare_query(host_exe_dep_query);
-  const std::string host_notif_dep_query(
-      "INSERT INTO hosts_hosts_dependencies (dependent_host_id, host_id, "
-      "dependency_period, notification_failure_options, inherits_parent) "
-      "VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE "
-      "dependency_period=VALUES(dependency_period), "
-      "notification_failure_options=VALUES(notification_failure_options), "
-      "inherits_parent=VALUES(inherits_parent)");
-  _host_notif_dependency_insupdate = _mysql.prepare_query(host_notif_dep_query);
   if (_store_in_hosts_services) {
     if (_bulk_prepared_statement) {
       auto hu = std::make_unique<database::mysql_bulk_stmt>(hscr_query);

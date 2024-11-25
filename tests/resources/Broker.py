@@ -21,6 +21,7 @@ import signal
 from os import setsid
 from os import makedirs
 from os.path import exists
+import datetime
 import pymysql.cursors
 import time
 import re
@@ -1326,7 +1327,7 @@ def ctn_broker_config_log(name, key, value):
     if name == 'central':
         filename = "central-broker.json"
     elif name.startswith('module'):
-        filename = "central-{}.json".format(name)
+        filename = f"central-{name}.json"
     else:
         filename = "central-rrd.json"
     with open(f"{ETC_ROOT}/centreon-broker/{filename}", "r") as f:
@@ -1740,6 +1741,46 @@ def ctn_get_metrics_for_service(service_id: int, metric_name: str = "%", timeout
     return None
 
 
+def ctn_compare_metrics_of_service(service_id: int, metrics: list, timeout: int = 60):
+    """
+    check if the metrics of a service contains the list passed in param
+
+    Warning:
+        A service is identified by a host ID and a service ID. This function should be used with caution.
+
+    Args:
+        service_id (int): The ID of the service.
+        metrics (str): expected metrics.
+        timeout (int, optional): Defaults to 60.
+
+    Returns:
+        A list of metric IDs or None if no metric found.
+    """
+
+    limit = time.time() + timeout
+
+    select_request = f"SELECT metric_name FROM metrics JOIN index_data ON index_id=id WHERE service_id={service_id}"
+    while time.time() < limit:
+        # Connect to the database
+        connection = pymysql.connect(host=DB_HOST,
+                                     user=DB_USER,
+                                     password=DB_PASS,
+                                     database=DB_NAME_STORAGE,
+                                     charset='utf8mb4',
+                                     cursorclass=pymysql.cursors.DictCursor)
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(select_request)
+                result = cursor.fetchall()
+                metric_in_db = [r['metric_name'] for r in result]
+                if set(metrics).issubset(set(metric_in_db)):
+                    return True
+                time.sleep(10)
+    logger.console(f"no metric found for service_id={service_id}")
+    return False
+
+
+
 def ctn_get_not_existing_metrics(count: int):
     """
     Return a list of metrics that does not exist.
@@ -2006,7 +2047,7 @@ def ctn_get_indexes_to_rebuild(count: int, nb_day=180):
          A list of indexes.
     """
     files = [os.path.basename(x) for x in glob.glob(
-        VAR_ROOT + "/lib/centreon/metrics/[0-9]*.rrd")]
+        VAR_ROOT + "/lib/centreon/status/[0-9]*.rrd")]
     ids = [int(f.split(".")[0]) for f in files]
 
     # Connect to the database
@@ -2016,47 +2057,66 @@ def ctn_get_indexes_to_rebuild(count: int, nb_day=180):
                                  database=DB_NAME_STORAGE,
                                  charset='utf8mb4',
                                  cursorclass=pymysql.cursors.DictCursor)
-    retval = []
+    retval = set()
     with connection:
         with connection.cursor() as cursor:
             # Read a single record
-            sql = "SELECT `metric_id`,`index_id` FROM `metrics`"
+            sql = "SELECT `metric_id`,`index_id` FROM `metrics` ORDER BY index_id"
             cursor.execute(sql)
             result = cursor.fetchall()
+            last_index = 0
             for r in result:
-                if int(r['metric_id']) in ids:
-                    index_id = int(r['index_id'])
-                    logger.console(
-                        "building data for metric {} index_id {}".format(r['metric_id'], index_id))
-                    # We go back to 180 days with steps of 5 mn
-                    start = int(time.time() / 86400) * 86400 - \
-                        24 * 60 * 60 * nb_day
-                    value = int(r['metric_id']) // 2
-                    status_value = index_id % 3
-                    cursor.execute("DELETE FROM data_bin WHERE id_metric={} AND ctime >= {}".format(
-                        r['metric_id'], start))
-                    # We set the value to a constant on 180 days
-                    for i in range(0, 24 * 60 * 60 * nb_day, 60 * 5):
-                        cursor.execute(
-                            "INSERT INTO data_bin (id_metric, ctime, value, status) VALUES ({},{},{},'{}')".format(
-                                r['metric_id'], start + i, value, status_value))
-                    connection.commit()
-                    retval.append(index_id)
+                index_id = int(r['index_id'])
 
-                if len(retval) == count:
+                if index_id not in ids:
+                    continue
+
+                # We must rebuild all the metrics of a given index.
+                if last_index != index_id and len(retval) == count:
                     return retval
+
+                logger.console(
+                    f"building data for metric {r['metric_id']} index_id {index_id}")
+                # We go back to 180 days with steps of 5 mn
+                now = datetime.datetime.now()
+                dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                start = dt - datetime.timedelta(days=nb_day)
+                start = int(start.timestamp())
+                logger.console(f">>>>>>>>>> start = {datetime.datetime.fromtimestamp(start)}")
+                value = int(r['metric_id']) // 2
+                status_value = index_id % 3
+                cursor.execute("DELETE FROM data_bin WHERE id_metric={} AND ctime >= {}".format(
+                    r['metric_id'], start))
+                # We set the value to a constant on 180 days
+                now = int(now.timestamp())
+                logger.console(f">>>>>>>>>> end = {datetime.datetime.fromtimestamp(now)}")
+                for i in range(start, now, 60 * 5):
+                    if i == start:
+                        logger.console(
+                            "INSERT INTO data_bin (id_metric, ctime, value, status) VALUES ({},{},{},'{}')".format(
+                                r['metric_id'], i, value, status_value))
+                    cursor.execute(
+                        "INSERT INTO data_bin (id_metric, ctime, value, status) VALUES ({},{},{},'{}')".format(
+                            r['metric_id'], i, value, status_value))
+                connection.commit()
+                retval.add(index_id)
+
+                last_index = index_id
 
     # if the loop is already and retval length is not sufficiently long, we
     # still return what we get.
     return retval
 
 
-def ctn_add_duplicate_metrics():
+def ctn_add_duplicate_metrics(metric_ids):
     """
-    Add a value at the middle of the first day of each metric
+    Add a value at the middle of the last day of each metric in the provided list.
+
+    Args:
+        metric_ids: A list of metric IDs.
 
     Returns:
-        A list of indexes of pair <time of oldest value>, <metric id>
+        A list of pairs <time,metric id> corresponding to the inserted rows.
     """
     connection = pymysql.connect(host=DB_HOST,
                                  user=DB_USER,
@@ -2067,32 +2127,35 @@ def ctn_add_duplicate_metrics():
     retval = []
     with connection:
         with connection.cursor() as cursor:
-            sql = "SELECT * FROM(SELECT  min(ctime) AS ctime, count(*) AS nb, id_metric FROM data_bin GROUP BY id_metric) s WHERE nb > 100"
-            cursor.execute(sql)
+            ids_str = ",".join(map(str, metric_ids))
+            query = f"SELECT id_metric, ctime FROM data_bin WHERE id_metric IN ({ids_str}) AND ctime > UNIX_TIMESTAMP(CURRENT_TIMESTAMP()) - 43200 ORDER BY ctime limit {len(metric_ids)}"
+            logger.console(query)
+            cursor.execute(query)
             result = cursor.fetchall()
             for metric_info in result:
                 # insert a duplicate value at the mid of the day
-                low_limit = metric_info['ctime'] + 43200 - 60
-                upper_limit = metric_info['ctime'] + 43200 + 60
+                id_metric = metric_info['id_metric']
+                ctime = metric_info['ctime']
                 cursor.execute(
-                    f"INSERT INTO data_bin SELECT * FROM data_bin WHERE id_metric={metric_info['id_metric']} AND ctime BETWEEN {low_limit} AND {upper_limit}")
+                    f"INSERT INTO data_bin SELECT * FROM data_bin WHERE id_metric={id_metric} AND ctime={ctime}")
                 retval.append({metric_info['id_metric'], metric_info['ctime']})
             connection.commit()
     return retval
 
 
-def ctn_check_for_NaN_metric(add_duplicate_metrics_ret):
+def ctn_check_for_nan_metric(add_duplicate_metrics_ret):
     """
-    Check that metrics are not a NaN during one day
+    Check that metrics are not NaN during one day
 
     Args:
-        add_duplicate_metrics_ret (): an array of pair <time of oldest value>, <metric id> returned by ctn_add_duplicate_metrics
+        add_duplicate_metrics_ret (): an array of pairs <time,metric id> returned by ctn_add_duplicate_metrics
 
     Returns:
         True on Success, otherwise False.
     """
-    for min_timestamp, metric_id in add_duplicate_metrics_ret:
-        max_timestamp = min_timestamp + 86400
+    for timestamp, metric_id in add_duplicate_metrics_ret:
+        min_timestamp = timestamp - 86400
+        max_timestamp = timestamp + 86400
         res = getoutput(
             f"rrdtool dump {VAR_ROOT}/lib/centreon/metrics/{metric_id}.rrd")
         # we search a string like <!-- 2022-12-07 23: 00: 00 CET / 1670450400 - -> < row > <v > NaN < /v > </row >
@@ -2911,3 +2974,71 @@ def ctn_get_broker_log_info(port, log, timeout=TIMEOUT):
             except:
                 logger.console("gRPC server not ready")
     return str(res)
+
+
+def aes_encrypt(port, app_secret, salt, content, timeout: int = 30):
+    """
+    Send a gRPC command to aes encrypt a content
+
+    Args:
+        port (int): the port to the gRPC server.
+        app_secret (str): The APP_SECRET base64 encoded.
+        salt (str): Salt base64 encoded.
+        content (str): The content to encrypt.
+
+    Returns:
+        The encrypted result string or an error message.
+    """
+    limit = time.time() + timeout
+    encoded = ""
+    while time.time() < limit:
+        time.sleep(1)
+        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = broker_pb2_grpc.BrokerStub(channel)
+            te = broker_pb2.AesMessage()
+            te.app_secret = app_secret
+            te.salt = salt
+            te.content = content
+            try:
+                encoded = stub.Aes256Encrypt(te)
+                break
+            except grpc.RpcError as rpc_error:
+                return rpc_error.details()
+            except:
+                logger.console("gRPC server not ready")
+
+    return encoded.str_arg
+
+
+def aes_decrypt(port, app_secret, salt, content, timeout: int = 30):
+    """
+    Send a gRPC command to aes decrypt a content
+
+    Args:
+        port (int): the port to the gRPC server.
+        app_secret (str): The APP_SECRET base64 encoded.
+        salt (str): Salt base64 encoded.
+        content (str): The content to decrypt.
+
+    Returns:
+        The decrypted result string or an error message.
+    """
+    limit = time.time() + timeout
+    encoded = ""
+    while time.time() < limit:
+        time.sleep(1)
+        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = broker_pb2_grpc.BrokerStub(channel)
+            te = broker_pb2.AesMessage()
+            te.app_secret = app_secret
+            te.salt = salt
+            te.content = content
+            try:
+                encoded = stub.Aes256Decrypt(te)
+                break
+            except grpc.RpcError as rpc_error:
+                return rpc_error.details()
+            except:
+                logger.console("gRPC server not ready")
+
+    return encoded.str_arg

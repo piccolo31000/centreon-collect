@@ -28,9 +28,7 @@
 
 using com::centreon::common::opt;
 
-namespace com::centreon::engine {
-
-namespace configuration {
+namespace com::centreon::engine::configuration {
 
 class host : public object {
  public:
@@ -88,7 +86,6 @@ class host : public object {
   std::string const& host_name() const noexcept;
   std::string const& icon_image() const noexcept;
   std::string const& icon_image_alt() const noexcept;
-  unsigned int initial_state() const noexcept;
   unsigned int low_flap_threshold() const noexcept;
   unsigned int max_check_attempts() const noexcept;
   std::string const& notes() const noexcept;
@@ -144,7 +141,6 @@ class host : public object {
   bool _set_hostgroups(std::string const& value);
   bool _set_icon_image(std::string const& value);
   bool _set_icon_image_alt(std::string const& value);
-  bool _set_initial_state(std::string const& value);
   bool _set_low_flap_threshold(unsigned int value);
   bool _set_max_check_attempts(unsigned int value);
   bool _set_notes(std::string const& value);
@@ -197,7 +193,6 @@ class host : public object {
   std::string _host_name;
   std::string _icon_image;
   std::string _icon_image_alt;
-  uint32_t _initial_state;
   opt<unsigned int> _low_flap_threshold;
   opt<unsigned int> _max_check_attempts;
   std::string _notes;
@@ -223,11 +218,9 @@ class host : public object {
   std::set<std::pair<uint64_t, uint16_t>> _tags;
 };
 
-typedef std::shared_ptr<host> host_ptr;
+using host_ptr = std::shared_ptr<host>;
 typedef std::list<host> list_host;
 using set_host = std::set<host>;
-}  // namespace configuration
-
-}  // namespace com::centreon::engine
+}  // namespace com::centreon::engine::configuration
 
 #endif  // !CCE_CONFIGURATION_HOST_HH
