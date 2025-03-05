@@ -64,8 +64,25 @@ DB_PORT = ""
 VAR_ROOT = ""
 ETC_ROOT = ""
 
+BBDO2 = True
+
 import_robot_resources()
 TIMEOUT = 30
+
+def ctn_in_bbdo2():
+    """ Check if we are in bbdo2 mode
+    """
+    global BBDO2
+    return BBDO2
+
+def ctn_set_bbdo2(value: bool):
+    """ Set the bbdo2 mode
+
+    Args:
+        value (bool): The value to set
+    """
+    global BBDO2
+    BBDO2 = value
 
 def ctn_parse_tests_params():
     params = os.environ.get("TESTS_PARAMS")
@@ -176,7 +193,7 @@ def ctn_wait_for_listen_on_range(port1: int, port2: int, prog: str, timeout: int
     return False
 
 
-def ctn_get_date(d: str):
+def ctn_get_date(d: str, agent_format:bool=False):
     """Generates a date from a string. This string can be just a timestamp or a date in iso format
 
     Args:
@@ -189,17 +206,20 @@ def ctn_get_date(d: str):
         ts = int(d)
         retval = datetime.fromtimestamp(int(ts))
     except ValueError:
-        retval = parser.parse(d[:-6])
+        if (not agent_format):
+                retval = parser.parse(d[:-6])
+        else:
+                retval = parser.parse(d)
     return retval
 
 
-def ctn_extract_date_from_log(line: str):
+def ctn_extract_date_from_log(line: str,agent_format:bool=False):
     p = re.compile(r"\[([^\]]*)\]")
     m = p.match(line)
     if m is None:
         return None
     try:
-        return ctn_get_date(m.group(1))
+        return ctn_get_date(m.group(1),agent_format)
     except parser.ParserError:
         logger.console(f"Unable to parse the date from the line {line}")
         return None
@@ -271,17 +291,20 @@ def ctn_find_in_log(log: str, date, content, **kwargs):
     """
     verbose = True
     regex = False
+    agent_format = False
     if 'verbose' in kwargs:
         verbose = 'verbose' == 'True'
     if 'regex' in kwargs:
         regex = bool(kwargs['regex'])
+    if 'agent_format' in kwargs:
+        agent_format = bool(kwargs['agent_format'])
 
     res = []
 
     try:
         with open(log, "r") as f:
             lines = f.readlines()
-        idx = ctn_find_line_from(lines, date)
+        idx = ctn_find_line_from(lines, date,agent_format)
 
         for c in content:
             found = False
@@ -341,6 +364,14 @@ def ctn_run_env():
     Get RUN_ENV env variable content
     """
     return os.environ.get('RUN_ENV', '')
+
+def ctn_get_workspace_win():
+    """
+    ctn_get_workspace_win
+
+    Get WINDOWS_PROJECT_PATH env variable content
+    """
+    return os.environ.get('WINDOWS_PROJECT_PATH', '')
 
 
 def ctn_start_mysql():
@@ -499,7 +530,7 @@ def ctn_check_engine_logs_are_duplicated(log: str, date):
         return False
 
 
-def ctn_find_line_from(lines, date):
+def ctn_find_line_from(lines, date, agent_format:bool=False):
     try:
         my_date = parser.parse(date)
     except:
@@ -511,13 +542,13 @@ def ctn_find_line_from(lines, date):
     idx = start
     while end > start:
         idx = (start + end) // 2
-        idx_d = ctn_extract_date_from_log(lines[idx])
+        idx_d = ctn_extract_date_from_log(lines[idx],agent_format)
         while idx_d is None:
             logger.console("Unable to parse the date ({} <= {} <= {}): <<{}>>".format(
                 start, idx, end, lines[idx]))
             idx -= 1
             if idx >= 0:
-                idx_d = ctn_extract_date_from_log(lines[idx])
+                idx_d = ctn_extract_date_from_log(lines[idx],agent_format)
             else:
                 logger.console("We are at the first line and no date found")
                 return 0
@@ -1987,9 +2018,161 @@ def ctn_check_service_perfdata(host: str, serv: str, timeout: int, precision: fl
                         if metric not in expected:
                             logger.console(f"ERROR unexpected metric: {metric}")
                             return False
-                        if abs(value - expected[metric]) > precision:
-                            logger.console(f"ERROR unexpected value for {metric}: {value}")
+                        if expected[metric] is not None and abs(value - expected[metric]) > precision:
+                            logger.console(f"ERROR unexpected value for {metric}, expected: {expected[metric]}, found: {value}")
                             return False
                     return True
         time.sleep(1)
+    logger.console(f"unexpected result: {result}")
     return False
+
+
+def ctn_check_agent_information(total_nb_agent: int, nb_poller:int, timeout: int):
+    """
+    Check if agent_information table is filled. Collect version is also checked
+        total_nb_agent (int): total number of agents
+        nb_poller (int): nb poller with at least one agent connected.
+        timeout (int): The timeout value for the check.
+    """
+    collect_version = ctn_get_collect_version()
+
+    collect_major = int(collect_version.split(".")[0])
+    collect_minor = int(collect_version.split(".")[1])
+    collect_patch = int(collect_version.split(".")[2])
+
+    limit = time.time() + timeout
+    query = "SELECT infos FROM agent_information WHERE enabled = 1"
+    while time.time() < limit:
+        connection = pymysql.connect(host=DB_HOST,
+                                     user=DB_USER,
+                                     password=DB_PASS,
+                                     database=DB_NAME_STORAGE,
+                                     charset='utf8mb4',
+                                     cursorclass=pymysql.cursors.DictCursor)
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                result = cursor.fetchall()
+                if len(result)  == nb_poller:
+                    nb_agent = 0
+                    for res in result:
+                        logger.console(f"infos: {res['infos']}")
+                        agent_infos = json.loads(res['infos'])
+                        for by_agent_info in agent_infos:
+                            if by_agent_info['agent_major'] != collect_major or by_agent_info['agent_minor'] != collect_minor or by_agent_info['agent_patch'] != collect_patch:
+                                logger.console(f"unexpected version: {by_agent_info['agent_major']}.{by_agent_info['agent_minor']}.{by_agent_info['agent_patch']}")
+                                return False
+                            nb_agent += by_agent_info['nb_agent']
+                    if nb_agent == total_nb_agent:
+                        return True
+        time.sleep(1)
+    logger.console(f"unexpected result: {result}")
+    return False
+
+
+def ctn_get_nb_process(exe:str):
+    """
+    ctn_get_nb_process
+
+    get the number of process with a specific executable
+    Args:
+        exe: executable to search
+    Returns: number of process
+    """
+
+    counter = 0
+
+    for p in psutil.process_iter():
+        if exe in p.name() or exe in ' '.join(p.cmdline()):
+            counter += 1
+    return counter
+
+def ctn_check_service_flapping(host: str, serv: str, timeout: int, precision: float, expected: int):
+    """
+    Check if performance data are near as expected.
+        host (str): The hostname of the service to check.
+        serv (str): The service name to check.
+        timeout (int): The timeout value for the check.
+        precision (float): The precision required for the performance data comparison.
+        expected (int): expected flapping value.
+    """
+    limit = time.time() + timeout
+
+    s_query = f"""SELECT s.flapping, s.percent_state_change FROM services s JOIN hosts h on s.host_id = h.host_id  WHERE h.name='{host}' AND description='{serv}'"""
+    r_query = f"""SELECT flapping, percent_state_change FROM resources WHERE parent_name='{host}' AND name='{serv}'"""
+
+
+    while time.time() < limit:
+        connection = pymysql.connect(host=DB_HOST,
+                                     user=DB_USER,
+                                     password=DB_PASS,
+                                     database=DB_NAME_STORAGE,
+                                     charset='utf8mb4',
+                                     cursorclass=pymysql.cursors.DictCursor)
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(s_query)
+                result = cursor.fetchall()
+                if len(result)  == 1 and result[0]['flapping'] == 1 and abs(result[0]['percent_state_change'] - expected) < precision:
+                    cursor.execute(r_query)
+                    result = cursor.fetchall()
+                    if len(result)  == 1 and result[0]['flapping'] == 1 and abs(result[0]['percent_state_change'] - expected) < precision:
+                        return True
+        time.sleep(1)
+    logger.console(f"unexpected result: {result}")
+    return False
+
+def ctn_check_host_flapping(host: str, timeout: int, precision: float, expected: int):
+    """
+    Check if performance data are near as expected.
+        host (str): The hostname of the service to check.
+        timeout (int): The timeout value for the check.
+        precision (float): The precision required for the performance data comparison.
+        expected (int): expected flapping value.
+    """
+    limit = time.time() + timeout
+
+    s_query = f"""SELECT flapping, percent_state_change FROM hosts WHERE name='{host}'"""
+    r_query = f"""SELECT flapping, percent_state_change FROM resources WHERE name='{host}' AND parent_id=0"""
+
+
+    while time.time() < limit:
+        connection = pymysql.connect(host=DB_HOST,
+                                     user=DB_USER,
+                                     password=DB_PASS,
+                                     database=DB_NAME_STORAGE,
+                                     charset='utf8mb4',
+                                     cursorclass=pymysql.cursors.DictCursor)
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(s_query)
+                result = cursor.fetchall()
+                if len(result)  == 1 and result[0]['flapping'] == 1 and abs(result[0]['percent_state_change'] - expected) < precision:
+                    cursor.execute(r_query)
+                    result = cursor.fetchall()
+                    if len(result)  == 1 and result[0]['flapping'] == 1 and abs(result[0]['percent_state_change'] - expected) < precision:
+                        return True
+        time.sleep(1)
+    logger.console(f"unexpected result: {result}")
+    return False
+
+def ctn_get_process_limit(pid:int, limit:str):
+    """
+    ctn_get_process_limit
+
+    Get a limit of a process
+    Args:
+        pid: process id
+        limit: limit to get
+
+    Returns: limit value
+    """
+    try:
+        with open(f"/proc/{pid}/limits") as f:
+            for line in f:
+                if limit in line:
+                    fields = line.split()
+                    return int(fields[len(fields) - 3]), int(fields[len(fields) - 2])
+    except:
+        return -1, -1
+    return -1, -1

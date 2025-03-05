@@ -105,10 +105,10 @@ constexpr void (stream::*const stream::neb_processing_table[])(
     &stream::_process_pb_service_group,
     &stream::_process_pb_service_group_member,
     &stream::_process_pb_host_parent,
-    nullptr,  // pb_instance_configuration
+    &stream::_process_pb_instance_configuration,
     &stream::_process_pb_adaptive_service_status,
     &stream::_process_pb_adaptive_host_status,
-};
+    &stream::_process_agent_stats};
 
 constexpr size_t neb_processing_table_size =
     sizeof(stream::neb_processing_table) /
@@ -1368,8 +1368,10 @@ void stream::_init_statements() {
       "has_graph=?,"                  // 7: perfdata != ""
       "last_check_type=?,"            // 8: check_type
       "last_check=?,"                 // 9: last_check
-      "output=? "                     // 10: output
-      "WHERE id=? AND parent_id=0");  // 11: host_id
+      "output=?,"                     // 10: output
+      "flapping=?,"                   // 11: is_flapping
+      "percent_state_change=? "       // 12: percent_state_change
+      "WHERE id=? AND parent_id=0");  // 13: host_id
 
   const std::string sscr_resources_query(
       "UPDATE resources SET "
@@ -1383,8 +1385,10 @@ void stream::_init_statements() {
       "has_graph=?,"                  // 7: perfdata != ""
       "last_check_type=?,"            // 8: check_type
       "last_check=?,"                 // 9: last_check
-      "output=? "                     // 10: output
-      "WHERE id=? AND parent_id=?");  // 11, 12: service_id and host_id
+      "output=? ,"                    // 10: output
+      "flapping=?,"                   // 11: is_flapping
+      "percent_state_change=? "       // 12: percent_state_change
+      "WHERE id=? AND parent_id=?");  // 13, 14: service_id and host_id
   if (_store_in_hosts_services) {
     if (_bulk_prepared_statement) {
       auto hu = std::make_unique<database::mysql_bulk_stmt>(hscr_query);

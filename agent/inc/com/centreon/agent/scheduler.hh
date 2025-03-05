@@ -42,7 +42,8 @@ class scheduler : public std::enable_shared_from_this<scheduler> {
       const std::string& /*cmd_name*/,
       const std::string& /*cmd_line*/,
       const engine_to_agent_request_ptr& /*engine to agent request*/,
-      check::completion_handler&&)>;
+      check::completion_handler&&,
+      const checks_statistics::pointer& /*stat*/)>;
 
  private:
   using check_queue =
@@ -83,6 +84,11 @@ class scheduler : public std::enable_shared_from_this<scheduler> {
   // last received configuration
   engine_to_agent_request_ptr _conf;
 
+  // As protobuf message calculation can be expensive, we measure size of first protobuf message of ten metrics for example,
+  // then we devide it by the number of metrics and we store it in this variable
+  // For the next frames, we multiply metrics number by this variable to estimate message length
+  unsigned _average_metric_length;
+
   void _start();
   void _start_send_timer();
   void _send_timer_handler(const boost::system::error_code& err);
@@ -113,7 +119,8 @@ class scheduler : public std::enable_shared_from_this<scheduler> {
       scope_metric_request& scope_metric,
       const std::string& metric_name);
 
-  void _add_metric_to_scope(uint64_t now,
+  void _add_metric_to_scope(uint64_t check_start,
+                            uint64_t now,
                             const com::centreon::common::perfdata& perf,
                             scope_metric_request& scope_metric);
 
@@ -164,7 +171,8 @@ class scheduler : public std::enable_shared_from_this<scheduler> {
       const std::string& cmd_name,
       const std::string& cmd_line,
       const engine_to_agent_request_ptr& conf,
-      check::completion_handler&& handler);
+      check::completion_handler&& handler,
+      const checks_statistics::pointer& stat);
 
   engine_to_agent_request_ptr get_last_message_to_agent() const {
     return _conf;
@@ -194,7 +202,8 @@ scheduler::scheduler(
       _send_timer(*io_context),
       _check_timer(*io_context),
       _check_builder(builder),
-      _conf(config) {}
+      _conf(config),
+      _average_metric_length(0) {}
 
 /**
  * @brief create and start a new scheduler

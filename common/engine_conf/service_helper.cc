@@ -57,7 +57,7 @@ service_helper::service_helper(Service* obj)
  * @param key The key to parse.
  * @param value The value corresponding to the key
  */
-bool service_helper::hook(std::string_view key, const std::string_view& value) {
+bool service_helper::hook(std::string_view key, std::string_view value) {
   Service* obj = static_cast<Service*>(mut_obj());
   /* Since we use key to get back the good key value, it is faster to give key
    * by copy to the method. We avoid one key allocation... */
@@ -275,5 +275,72 @@ bool service_helper::insert_customvariable(std::string_view key,
   new_cv->set_name(key.data(), key.size());
   new_cv->set_value(value.data(), value.size());
   return true;
+}
+
+/**
+ * @brief Expand the Service object.
+ *
+ * @param s The configuration state to expand.
+ * @param err The error count object to update in case of errors.
+ */
+void service_helper::expand(
+    configuration::State& s,
+    configuration::error_cnt& err,
+    absl::flat_hash_map<std::string, configuration::Host> m_host,
+    absl::flat_hash_map<std::string, configuration::Servicegroup*> sgs) {
+  // Browse all services.
+  for (auto& service_cfg : *s.mutable_services()) {
+    // Browse service groups.
+    for (auto& sg_name : service_cfg.servicegroups().data()) {
+      // Find service group.
+      auto found = sgs.find(sg_name);
+      if (found == sgs.end()) {
+        err.config_errors++;
+        throw msg_fmt(
+            "Could not add service '{}' of host '{}' to non-existing service "
+            "group '{}'",
+            service_cfg.service_description(), service_cfg.host_name(),
+            sg_name);
+      }
+
+      // Add service to service members
+      fill_pair_string_group(found->second->mutable_members(),
+                             service_cfg.host_name(),
+                             service_cfg.service_description());
+    }
+
+    if (!service_cfg.host_id() || service_cfg.contacts().data().empty() ||
+        service_cfg.contactgroups().data().empty() ||
+        service_cfg.notification_interval() == 0 ||
+        service_cfg.notification_period().empty() ||
+        service_cfg.timezone().empty()) {
+      // Find host.
+      auto it = m_host.find(service_cfg.host_name());
+      if (it == m_host.end()) {
+        err.config_errors++;
+        throw msg_fmt(
+            "Could not inherit special variables for service '{}': host '{}' "
+            "does not exist",
+            service_cfg.service_description(), service_cfg.host_name());
+      }
+
+      // Inherits variables.
+      if (!service_cfg.host_id())
+        service_cfg.set_host_id(it->second.host_id());
+      if (service_cfg.contacts().data().empty() &&
+          service_cfg.contactgroups().data().empty()) {
+        service_cfg.mutable_contacts()->CopyFrom(it->second.contacts());
+        service_cfg.mutable_contactgroups()->CopyFrom(
+            it->second.contactgroups());
+      }
+      if (service_cfg.notification_interval() == 0)
+        service_cfg.set_notification_interval(
+            it->second.notification_interval());
+      if (service_cfg.notification_period().empty())
+        service_cfg.set_notification_period(it->second.notification_period());
+      if (service_cfg.timezone().empty())
+        service_cfg.set_timezone(it->second.timezone());
+    }
+  }
 }
 }  // namespace com::centreon::engine::configuration

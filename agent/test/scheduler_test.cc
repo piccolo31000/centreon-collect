@@ -45,7 +45,8 @@ class tempo_check : public check {
               const engine_to_agent_request_ptr& cnf,
               int command_exit_status,
               duration completion_delay,
-              check::completion_handler&& handler)
+              check::completion_handler&& handler,
+              const checks_statistics::pointer& stat)
       : check(io_context,
               logger,
               exp,
@@ -54,7 +55,8 @@ class tempo_check : public check {
               cmd_name,
               cmd_line,
               cnf,
-              std::move(handler)),
+              std::move(handler),
+              stat),
         _completion_timer(*io_context),
         _command_exit_status(command_exit_status),
         _completion_delay(completion_delay) {}
@@ -146,7 +148,9 @@ TEST_F(scheduler_test, no_config) {
          duration /* check interval */, const std::string& /*service*/,
          const std::string& /*cmd_name*/, const std::string& /*cmd_line*/,
          const engine_to_agent_request_ptr& /*engine to agent request*/,
-         check::completion_handler&&) { return std::shared_ptr<check>(); });
+         check::completion_handler&&, const checks_statistics::pointer&) {
+        return std::shared_ptr<check>();
+      });
 
   std::weak_ptr<scheduler> weak_shed(sched);
   sched.reset();
@@ -189,11 +193,12 @@ TEST_F(scheduler_test, correct_schedule) {
          const std::string& service, const std::string& cmd_name,
          const std::string& cmd_line,
          const engine_to_agent_request_ptr& engine_to_agent_request,
-         check::completion_handler&& handler) {
+         check::completion_handler&& handler,
+         const checks_statistics::pointer& stat) {
         return std::make_shared<tempo_check>(
             io_context, logger, start_expected, check_interval, service,
             cmd_name, cmd_line, engine_to_agent_request, 0,
-            std::chrono::milliseconds(50), std::move(handler));
+            std::chrono::milliseconds(50), std::move(handler), stat);
       });
 
   std::this_thread::sleep_for(std::chrono::milliseconds(10100));
@@ -262,11 +267,12 @@ TEST_F(scheduler_test, time_out) {
          const std::string& service, const std::string& cmd_name,
          const std::string& cmd_line,
          const engine_to_agent_request_ptr& engine_to_agent_request,
-         check::completion_handler&& handler) {
+         check::completion_handler&& handler,
+         const checks_statistics::pointer& stat) {
         return std::make_shared<tempo_check>(
             io_context, logger, start_expected, check_interval, service,
             cmd_name, cmd_line, engine_to_agent_request, 0,
-            std::chrono::milliseconds(1500), std::move(handler));
+            std::chrono::milliseconds(1500), std::move(handler), stat);
       });
   std::unique_lock l(m);
   export_cond.wait(l);
@@ -315,11 +321,12 @@ TEST_F(scheduler_test, correct_output_examplar) {
          const std::string& service, const std::string& cmd_name,
          const std::string& cmd_line,
          const engine_to_agent_request_ptr& engine_to_agent_request,
-         check::completion_handler&& handler) {
+         check::completion_handler&& handler,
+         const checks_statistics::pointer& stat) {
         return std::make_shared<tempo_check>(
             io_context, logger, start_expected, check_interval, service,
             cmd_name, cmd_line, engine_to_agent_request, 0,
-            std::chrono::milliseconds(10), std::move(handler));
+            std::chrono::milliseconds(10), std::move(handler), stat);
       });
   std::mutex m;
   std::unique_lock l(m);
@@ -386,6 +393,7 @@ class concurent_check : public check {
  public:
   static std::set<concurent_check*> checked;
   static std::set<concurent_check*> active_checks;
+  static std::mutex checked_m;
   static unsigned max_active_check;
 
   concurent_check(const std::shared_ptr<asio::io_context>& io_context,
@@ -398,7 +406,8 @@ class concurent_check : public check {
                   const engine_to_agent_request_ptr& cnf,
                   int command_exit_status,
                   duration completion_delay,
-                  check::completion_handler&& handler)
+                  check::completion_handler&& handler,
+                  const checks_statistics::pointer& stat)
       : check(io_context,
               logger,
               exp,
@@ -407,7 +416,8 @@ class concurent_check : public check {
               cmd_name,
               cmd_line,
               cnf,
-              std::move(handler)),
+              std::move(handler),
+              stat),
         _completion_timer(*io_context),
         _command_exit_status(command_exit_status),
         _completion_delay(completion_delay) {}
@@ -416,6 +426,7 @@ class concurent_check : public check {
     if (!_start_check(timeout)) {
       return;
     }
+    std::lock_guard l(checked_m);
     active_checks.insert(this);
     if (active_checks.size() > max_active_check) {
       max_active_check = active_checks.size();
@@ -426,8 +437,11 @@ class concurent_check : public check {
                                       _get_running_check_index()](
                                      [[maybe_unused]] const boost::system::
                                          error_code& err) {
-      active_checks.erase(this);
-      checked.insert(this);
+      {
+        std::lock_guard l(checked_m);
+        active_checks.erase(this);
+        checked.insert(this);
+      }
       SPDLOG_TRACE("end of completion timer for serv {}", get_service());
       me->on_completion(
           check_running_index, _command_exit_status,
@@ -444,6 +458,7 @@ class concurent_check : public check {
 std::set<concurent_check*> concurent_check::checked;
 std::set<concurent_check*> concurent_check::active_checks;
 unsigned concurent_check::max_active_check;
+std::mutex concurent_check::checked_m;
 
 TEST_F(scheduler_test, max_concurent) {
   std::shared_ptr<scheduler> sched = scheduler::load(
@@ -456,7 +471,8 @@ TEST_F(scheduler_test, max_concurent) {
          const std::string& service, const std::string& cmd_name,
          const std::string& cmd_line,
          const engine_to_agent_request_ptr& engine_to_agent_request,
-         check::completion_handler&& handler) {
+         check::completion_handler&& handler,
+         const checks_statistics::pointer& stat) {
         return std::make_shared<concurent_check>(
             io_context, logger, start_expected, check_interval, service,
             cmd_name, cmd_line, engine_to_agent_request, 0,
@@ -464,18 +480,18 @@ TEST_F(scheduler_test, max_concurent) {
                                       10) /*the - 10 is for some delay in test
                                              execution from start expected*/
             ,
-            std::move(handler));
+            std::move(handler), stat);
       });
 
   // to many tests to be completed in eleven second
   std::this_thread::sleep_for(std::chrono::milliseconds(11000));
-  ASSERT_LT(concurent_check::checked.size(), 200);
-  ASSERT_EQ(concurent_check::max_active_check, 10);
+  EXPECT_LT(concurent_check::checked.size(), 200);
+  EXPECT_EQ(concurent_check::max_active_check, 10);
 
   // all tests must be completed in 16s
   std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-  ASSERT_EQ(concurent_check::max_active_check, 10);
-  ASSERT_EQ(concurent_check::checked.size(), 200);
+  EXPECT_EQ(concurent_check::max_active_check, 10);
+  EXPECT_EQ(concurent_check::checked.size(), 200);
 
   sched->stop();
 }

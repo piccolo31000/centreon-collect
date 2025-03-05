@@ -104,6 +104,7 @@ add_custom_command(
   COMMAND
     ${Protobuf_PROTOC_EXECUTABLE} ARGS
     --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN} --proto_path=${SRC_DIR}
+    --proto_path=${CMAKE_SOURCE_DIR}/bbdo
     --proto_path=${CMAKE_SOURCE_DIR}/common/src --grpc_out="${SRC_DIR}"
     ${SRC_DIR}/broker.proto
   DEPENDS ${SRC_DIR}/broker.proto
@@ -111,11 +112,12 @@ add_custom_command(
   OUTPUT ${SRC_DIR}/broker.pb.cc ${SRC_DIR}/broker.pb.h
   COMMAND
     ${Protobuf_PROTOC_EXECUTABLE} ARGS --cpp_out="${SRC_DIR}"
+    --proto_path=${CMAKE_SOURCE_DIR}/bbdo
     --proto_path=${SRC_DIR} --proto_path=${CMAKE_SOURCE_DIR}/common/src
     ${SRC_DIR}/broker.proto
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
-add_custom_target("target_broker_message" DEPENDS "${SRC_DIR}/broker.pb.cc"
+add_custom_target(target_broker_message DEPENDS "${SRC_DIR}/broker.pb.cc"
                                                   "${SRC_DIR}/broker.pb.h")
 
 include_directories(${SRC_DIR} ${CMAKE_SOURCE_DIR}/common/src
@@ -123,7 +125,7 @@ include_directories(${SRC_DIR} ${CMAKE_SOURCE_DIR}/common/src
 
 add_library(berpc STATIC ${SRC_DIR}/broker.grpc.pb.cc ${SRC_DIR}/broker.pb.cc
                          ${SRC_DIR}/broker.grpc.pb.h ${SRC_DIR}/broker.pb.h)
-target_link_libraries(berpc protobuf)
+target_link_libraries(berpc protobuf pb_common_lib)
 set_target_properties(berpc PROPERTIES COMPILE_FLAGS "-fPIC")
 
 # Version.
@@ -453,6 +455,7 @@ target_link_libraries(
   ctncrypto
   dl
   pb_bbdo_lib
+  pb_common_lib
   pb_extcmd_lib
   pb_open_telemetry_lib
   pthread
@@ -505,25 +508,32 @@ unset(MODULE_LIST)
 # sql library
 add_subdirectory(core/sql)
 
-# Generator module.
-add_broker_module(GENERATOR OFF)
-add_broker_module(STATS ON)
-# add_broker_module(STATS_EXPORTER OFF)
-add_broker_module(NEB ON)
-add_broker_module(RRD ON)
-add_broker_module(UNIFIED_SQL ON)
-add_broker_module(SQL ON)
-add_broker_module(STORAGE ON)
-add_broker_module(INFLUXDB ON)
-add_broker_module(GRAPHITE ON)
-add_broker_module(BAM ON)
-add_broker_module(TCP ON)
-add_broker_module(TLS ON)
-add_broker_module(TLS2 OFF)
-add_broker_module(DUMP OFF)
-add_broker_module(GRPC ON)
-add_broker_module(VICTORIA_METRICS ON)
-add_subdirectory(http_tsdb)
+if (ONLY_ROBOT_CMA)
+  add_broker_module(STATS ON)
+  add_broker_module(NEB ON)
+  add_broker_module(RRD ON)
+  add_broker_module(UNIFIED_SQL ON)
+  add_broker_module(TCP ON)
+else()
+  # Generator module.
+  add_broker_module(GENERATOR OFF)
+  add_broker_module(STATS ON)
+  add_broker_module(NEB ON)
+  add_broker_module(RRD ON)
+  add_broker_module(UNIFIED_SQL ON)
+  add_broker_module(SQL ON)
+  add_broker_module(STORAGE ON)
+  add_broker_module(INFLUXDB ON)
+  add_broker_module(GRAPHITE ON)
+  add_broker_module(BAM ON)
+  add_broker_module(TCP ON)
+  add_broker_module(TLS ON)
+  add_broker_module(TLS2 OFF)
+  add_broker_module(DUMP OFF)
+  add_broker_module(GRPC ON)
+  add_broker_module(VICTORIA_METRICS ON)
+  add_subdirectory(http_tsdb)
+endif()
 
 # Lua module.
 option(WITH_MODULE_LUA "Build lua module." ON)
@@ -608,7 +618,7 @@ include(cmake/package.cmake)
 # Enable testing.
 option(WITH_SQL_TESTS "Sql unit tests are enabled." OFF)
 
-if(WITH_TESTING)
+if(WITH_TESTING AND NOT ONLY_ROBOT_CMA)
   add_subdirectory(test)
 endif()
 

@@ -17,8 +17,13 @@
  */
 
 #include "scheduler.hh"
+#include "check.hh"
 #include "check_cpu.hh"
-#ifdef _WINDOWS
+#include "check_health.hh"
+#include "config.hh"
+#ifdef _WIN32
+#include "check_memory.hh"
+#include "check_service.hh"
 #include "check_uptime.hh"
 #endif
 #include "check_exec.hh"
@@ -172,6 +177,9 @@ void scheduler::update(const engine_to_agent_request_ptr& conf) {
                      conf->config().check_interval());
 
   if (nb_check > 0) {
+    // raz stats in order to not keep statistics of deleted checks
+    checks_statistics::pointer stat = std::make_shared<checks_statistics>();
+
     duration time_between_check =
         std::chrono::microseconds(conf->config().check_interval() * 1000000) /
         nb_check;
@@ -199,7 +207,8 @@ void scheduler::update(const engine_to_agent_request_ptr& conf) {
                 const std::list<com::centreon::common::perfdata>& perfdata,
                 const std::list<std::string>& outputs) {
               me->_check_handler(check, status, perfdata, outputs);
-            });
+            },
+            stat);
         last_inserted_iter = _waiting_check_queue.emplace_hint(
             last_inserted_iter, check_to_schedule);
         next += time_between_check;
@@ -247,7 +256,7 @@ void scheduler::_check_handler(
     unsigned status,
     const std::list<com::centreon::common::perfdata>& perfdata,
     const std::list<std::string>& outputs) {
-  SPDLOG_LOGGER_TRACE(_logger, "end check for service {} command {}",
+  SPDLOG_LOGGER_DEBUG(_logger, "end check for service {} command {}",
                       check->get_service(), check->get_command_line());
 
   // conf has changed => no repush for next check
@@ -344,6 +353,9 @@ void scheduler::_store_result_in_metrics_and_exemplars(
   uint64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                      std::chrono::system_clock::now().time_since_epoch())
                      .count();
+  uint64_t check_start = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             check->get_last_start().time_since_epoch())
+                             .count();
 
   auto state_metrics = _get_metric(scope_metrics, "status");
   if (!outputs.empty()) {
@@ -355,10 +367,23 @@ void scheduler::_store_result_in_metrics_and_exemplars(
   }
   auto data_point = state_metrics->mutable_gauge()->add_data_points();
   data_point->set_time_unix_nano(now);
+  data_point->set_start_time_unix_nano(check_start);
   data_point->set_as_int(status);
 
   for (const com::centreon::common::perfdata& perf : perfdata) {
-    _add_metric_to_scope(now, perf, scope_metrics);
+    _add_metric_to_scope(check_start, now, perf, scope_metrics);
+  }
+  if (!_average_metric_length &&
+      _current_request->otel_request().resource_metrics_size() > 10) {
+    _average_metric_length =
+        _current_request->ByteSizeLong() /
+        _current_request->otel_request().resource_metrics_size();
+  }
+  if (_current_request->otel_request().resource_metrics_size() *
+          _average_metric_length >
+      2 * 1024 * 1024) {
+    _metric_sender(_current_request);
+    _init_export_request();
   }
 }
 
@@ -427,6 +452,7 @@ scheduler::scope_metric_request& scheduler::_get_scope_metrics(
  * @param scope_metric
  */
 void scheduler::_add_metric_to_scope(
+    uint64_t check_start,
     uint64_t now,
     const com::centreon::common::perfdata& perf,
     scope_metric_request& scope_metric) {
@@ -435,6 +461,7 @@ void scheduler::_add_metric_to_scope(
   auto data_point = metric->mutable_gauge()->add_data_points();
   data_point->set_as_double(perf.value());
   data_point->set_time_unix_nano(now);
+  data_point->set_start_time_unix_nano(check_start);
   switch (perf.value_type()) {
     case com::centreon::common::perfdata::counter: {
       auto attrib_type = data_point->add_attributes();
@@ -542,7 +569,8 @@ std::shared_ptr<check> scheduler::default_check_builder(
     const std::string& cmd_name,
     const std::string& cmd_line,
     const engine_to_agent_request_ptr& conf,
-    check::completion_handler&& handler) {
+    check::completion_handler&& handler,
+    const checks_statistics::pointer& stat) {
   using namespace std::literals;
   // test native checks where cmd_lin is a json
   try {
@@ -560,16 +588,28 @@ std::shared_ptr<check> scheduler::default_check_builder(
     if (check_type == "cpu_percentage"sv) {
       return std::make_shared<check_cpu>(
           io_context, logger, first_start_expected, check_interval, service,
-          cmd_name, cmd_line, *args, conf, std::move(handler));
-#ifdef _WINDOWS
+          cmd_name, cmd_line, *args, conf, std::move(handler), stat);
+    } else if (check_type == "health"sv) {
+      return std::make_shared<check_health>(
+          io_context, logger, first_start_expected, check_interval, service,
+          cmd_name, cmd_line, *args, conf, std::move(handler), stat);
+#ifdef _WIN32
     } else if (check_type == "uptime"sv) {
       return std::make_shared<check_uptime>(
           io_context, logger, first_start_expected, check_interval, service,
-          cmd_name, cmd_line, *args, conf, std::move(handler));
+          cmd_name, cmd_line, *args, conf, std::move(handler), stat);
     } else if (check_type == "storage"sv) {
       return std::make_shared<check_drive_size>(
           io_context, logger, first_start_expected, check_interval, service,
-          cmd_name, cmd_line, *args, conf, std::move(handler));
+          cmd_name, cmd_line, *args, conf, std::move(handler), stat);
+    } else if (check_type == "memory"sv) {
+      return std::make_shared<check_memory>(
+          io_context, logger, first_start_expected, check_interval, service,
+          cmd_name, cmd_line, *args, conf, std::move(handler), stat);
+    } else if (check_type == "service"sv) {
+      return std::make_shared<check_service>(
+          io_context, logger, first_start_expected, check_interval, service,
+          cmd_name, cmd_line, *args, conf, std::move(handler), stat);
 #endif
     } else {
       throw exceptions::msg_fmt("command {}, unknown native check:{}", cmd_name,
@@ -578,6 +618,6 @@ std::shared_ptr<check> scheduler::default_check_builder(
   } catch (const std::exception&) {
     return check_exec::load(io_context, logger, first_start_expected,
                             check_interval, service, cmd_name, cmd_line, conf,
-                            std::move(handler));
+                            std::move(handler), stat);
   }
 }

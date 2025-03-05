@@ -46,7 +46,7 @@ contact_helper::contact_helper(Contact* obj)
  * @param key The key to parse.
  * @param value The value corresponding to the key
  */
-bool contact_helper::hook(std::string_view key, const std::string_view& value) {
+bool contact_helper::hook(std::string_view key, std::string_view value) {
   Contact* obj = static_cast<Contact*>(mut_obj());
   /* Since we use key to get back the good key value, it is faster to give key
    * by copy to the method. We avoid one key allocation... */
@@ -156,5 +156,33 @@ bool contact_helper::insert_customvariable(std::string_view key,
   new_cv->set_name(key.data(), key.size());
   new_cv->set_value(value.data(), value.size());
   return true;
+}
+
+/**
+ * @brief Expand the Contact object.
+ *
+ * @param s The configuration::State object.
+ * @param err An error counter.
+ */
+void contact_helper::expand(
+    configuration::State& s,
+    configuration::error_cnt& err,
+    absl::flat_hash_map<std::string, configuration::Contactgroup*>&
+        m_contactgroups) {
+  // Browse all contacts.
+  for (auto& c : *s.mutable_contacts()) {
+    // Browse current contact's groups.
+    for (auto& cg : *c.mutable_contactgroups()->mutable_data()) {
+      // Find contact group.
+      auto found_cg = m_contactgroups.find(cg);
+      if (found_cg == m_contactgroups.end()) {
+        err.config_errors++;
+        throw msg_fmt(
+            "Could not add contact '{}' to non-existing contact group '{}'",
+            c.contact_name(), cg);
+      }
+      fill_string_group(found_cg->second->mutable_members(), c.contact_name());
+    }
+  }
 }
 }  // namespace com::centreon::engine::configuration

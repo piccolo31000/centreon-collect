@@ -17,6 +17,16 @@
  */
 #include <windows.h>
 
+#include "log.hh"
+
+#include "agent_info.hh"
+#include "check_cpu.hh"
+#include "check_health.hh"
+#include "check_memory.hh"
+#include "check_service.hh"
+#include "check_uptime.hh"
+#include "drive_size.hh"
+
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -24,6 +34,7 @@
 
 #include "config.hh"
 #include "drive_size.hh"
+#include "ntdll.hh"
 #include "streaming_client.hh"
 #include "streaming_server.hh"
 
@@ -41,7 +52,6 @@ using namespace com::centreon::agent;
 std::shared_ptr<asio::io_context> g_io_context =
     std::make_shared<asio::io_context>();
 
-std::shared_ptr<spdlog::logger> g_logger;
 static std::shared_ptr<streaming_client> _streaming_client;
 
 static std::shared_ptr<streaming_server> _streaming_server;
@@ -106,6 +116,22 @@ static std::string read_file(const std::string& file_path) {
   return "";
 }
 
+void show_help() {
+  std::cout << "usage: centagent.exe [options]" << std::endl;
+  std::cout << "Options:" << std::endl;
+  std::cout << "  --standalone: run the agent in standalone mode not from "
+               "service manager (mandatory for start it from command line)"
+            << std::endl;
+  std::cout << "  --help: show this help" << std::endl;
+  std::cout << std::endl << "native checks options:" << std::endl;
+  check_cpu::help(std::cout);
+  check_memory::help(std::cout);
+  check_uptime::help(std::cout);
+  check_drive_size::help(std::cout);
+  check_service::help(std::cout);
+  check_health::help(std::cout);
+}
+
 /**
  * @brief this program can be started in two ways
  * from command line: main function
@@ -114,11 +140,10 @@ static std::string read_file(const std::string& file_path) {
  * @return int exit status returned to command line (0 success)
  */
 int _main(bool service_start) {
-  const char* registry_path = "SOFTWARE\\Centreon\\" SERVICE_NAME;
+  std::string registry_path = "SOFTWARE\\Centreon\\" SERVICE_NAME;
 
-  std::unique_ptr<config> conf;
   try {
-    conf = std::make_unique<config>(registry_path);
+    config::load(registry_path);
   } catch (const std::exception& e) {
     SPDLOG_ERROR("fail to read conf from registry {}: {}", registry_path,
                  e.what());
@@ -142,41 +167,45 @@ int _main(bool service_start) {
     g_logger = std::make_shared<spdlog::logger>("", sink);
   };
 
+  const config& conf = config::instance();
+
   try {
-    if (conf->get_log_type() == config::to_file) {
-      if (!conf->get_log_file().empty()) {
-        if (conf->get_log_files_max_size() > 0 &&
-            conf->get_log_files_max_number() > 0) {
+    if (conf.get_log_type() == config::to_file) {
+      if (!conf.get_log_file().empty()) {
+        if (conf.get_log_files_max_size() > 0 &&
+            conf.get_log_files_max_number() > 0) {
           g_logger = spdlog::rotating_logger_mt(
-              logger_name, conf->get_log_file(),
-              conf->get_log_files_max_size() * 0x100000,
-              conf->get_log_files_max_number());
+              logger_name, conf.get_log_file(),
+              conf.get_log_files_max_size() * 0x100000,
+              conf.get_log_files_max_number());
         } else {
           SPDLOG_INFO(
               "no log-max-file-size option or no log-max-files option provided "
               "=> logs will not be rotated by centagent");
-          g_logger = spdlog::basic_logger_mt(logger_name, conf->get_log_file());
+          g_logger = spdlog::basic_logger_mt(logger_name, conf.get_log_file());
         }
       } else {
         SPDLOG_ERROR(
             "log-type=file needs the option log-file => log to event log");
         create_event_logger();
       }
-    } else if (conf->get_log_type() == config::to_stdout) {
+    } else if (conf.get_log_type() == config::to_stdout) {
       g_logger = spdlog::stdout_color_mt(logger_name);
     } else {
       create_event_logger();
     }
   } catch (const std::exception& e) {
-    SPDLOG_CRITICAL("Can't log to {}: {}", conf->get_log_file(), e.what());
+    SPDLOG_CRITICAL("Can't log to {}: {}", conf.get_log_file(), e.what());
     return 2;
   }
 
-  g_logger->set_level(conf->get_log_level());
+  g_logger->set_level(conf.get_log_level());
 
   g_logger->flush_on(spdlog::level::warn);
 
   spdlog::flush_every(std::chrono::seconds(1));
+
+  set_grpc_logger();
 
   SPDLOG_LOGGER_INFO(g_logger, "centreon-monitoring-agent start");
   std::shared_ptr<com::centreon::common::grpc::grpc_config> grpc_conf;
@@ -185,26 +214,48 @@ int _main(bool service_start) {
     _signals.async_wait(signal_handler);
 
     grpc_conf = std::make_shared<com::centreon::common::grpc::grpc_config>(
-        conf->get_endpoint(), conf->use_encryption(),
-        read_file(conf->get_public_cert_file()),
-        read_file(conf->get_private_key_file()),
-        read_file(conf->get_ca_certificate_file()), conf->get_ca_name(), true,
-        30, conf->get_second_max_reconnect_backoff());
+        conf.get_endpoint(), conf.use_encryption(),
+        read_file(conf.get_public_cert_file()),
+        read_file(conf.get_private_key_file()),
+        read_file(conf.get_ca_certificate_file()), conf.get_ca_name(), true, 30,
+        conf.get_second_max_reconnect_backoff(), conf.get_max_message_length());
 
   } catch (const std::exception& e) {
     SPDLOG_CRITICAL("fail to parse input params: {}", e.what());
     return -1;
   }
 
-  if (conf->use_reverse_connection()) {
-    _streaming_server = streaming_server::load(g_io_context, g_logger,
-                                               grpc_conf, conf->get_host());
-  } else {
-    _streaming_client = streaming_client::load(g_io_context, g_logger,
-                                               grpc_conf, conf->get_host());
-  }
-
   try {
+    load_nt_dll();
+    read_os_version();
+
+    if (conf.use_reverse_connection()) {
+      _streaming_server = streaming_server::load(g_io_context, g_logger,
+                                                 grpc_conf, conf.get_host());
+    } else {
+      _streaming_client = streaming_client::load(g_io_context, g_logger,
+                                                 grpc_conf, conf.get_host());
+    }
+
+    if (!conf.use_encryption()) {
+      SPDLOG_LOGGER_WARN(
+          g_logger,
+          "NON TLS CONNECTION CONFIGURED // THIS IS NOT ALLOWED IN PRODUCTION");
+
+      auto timer = std::make_shared<asio::steady_timer>(*g_io_context,
+                                                        std::chrono::hours(1));
+      timer->async_wait([timer](const boost::system::error_code& ec) {
+        if (!ec) {
+          SPDLOG_LOGGER_WARN(g_logger,
+                             "NON TLS CONNECTION TIME EXPIRED // THIS IS NOT "
+                             "ALLOWED IN PRODUCTION");
+          SPDLOG_LOGGER_WARN(g_logger,
+                             "CONNECTION KILLED, AGENT NEED TO BE RESTART");
+          stop_process();
+        }
+      });
+    }
+
     g_io_context->run();
   } catch (const std::exception& e) {
     SPDLOG_LOGGER_CRITICAL(g_logger, "unhandled exception: {}", e.what());
@@ -240,6 +291,11 @@ void WINAPI SvcMain(DWORD, LPTSTR*);
 int main(int argc, char* argv[]) {
   if (argc > 1 && !lstrcmpi(argv[1], "--standalone")) {
     return _main(false);
+  }
+
+  if (argc > 1 && !lstrcmpi(argv[1], "--help")) {
+    show_help();
+    return 0;
   }
 
   SPDLOG_INFO(
