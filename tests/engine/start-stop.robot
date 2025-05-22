@@ -36,16 +36,6 @@ ESS4
     Ctn Config Broker    module    ${3}
     Repeat Keyword    5 times    Ctn Start Stop Instances    300ms
 
-ESS5
-    [Documentation]    Engine here is started with cbmod configured with evoluated parameters.
-    ...    The legacy way to start cbmod is cbmod /etc/centreon-broker/central-module.json.
-    ...    Now we can also start it with cbmod -c /etc/centreon-broker/central-module.json -e /etc/centreon-engine.
-    [Tags]    engine    start-stop    MON-15671
-    Ctn Config Engine    ${1}
-    Ctn Config Broker    module    ${1}
-    Ctn Engine Config Set Value    ${0}    broker_module    /usr/lib64/nagios/cbmod.so -c /etc/centreon-broker/central-module0.json -e /etc/centreon-engine    disambiguous=True
-    Repeat Keyword    3 times    Ctn Start Stop Instances    2s
-
 E_FD_LIMIT
     [Documentation]    Engine here is started with a low file descriptor limit.
     ...    The engine should not crash and limit should be set.
@@ -57,13 +47,38 @@ E_FD_LIMIT
     ${start}    Get Current Date
     Ctn Start Engine
     Ctn Wait For Engine To Be Ready    ${start}    ${1}
-    
+
     ${pid}    Get Process Id    e0
     ${limits}    Ctn Get Process Limit    ${pid}    Max open files
-    
+
     Should Be Equal As Numbers    ${limits[0]}    1048576    Engine should have 1048576 file descriptors
 
     Ctn Stop Engine
+
+ESSCTO
+    [Documentation]    Scenario: Engine services timeout due to missing Perl connector
+    ...    Given the Engine is configured as usual without the Perl connector
+    ...    When the Engine executes its service commands
+    ...    Then the commands take too long and reach the timeout
+    ...    And the Engine starts and stops two times as a result
+    [Tags]    engine    start-stop    MON-167816
+    Ctn Config Engine    ${1}
+    Ctn Engine Command Add Arg    ${0}    *    --duration 1000
+    Ctn Engine Command Remove Connector    ${0}    *
+    Ctn Config Broker    module
+    Repeat Keyword    4 times    Ctn Start Stop Instances    20s
+
+ESSCTOWC
+    [Documentation]    Scenario: Engine services timeout due to missing Perl connector
+    ...    Given the Engine is configured as usual with some command using the Perl connector
+    ...    When the Engine executes its service commands
+    ...    Then the commands take too long and reach the timeout
+    ...    And the Engine starts and stops two times as a result
+    [Tags]    engine    start-stop
+    Ctn Config Engine    ${1}
+    Ctn Engine Command Add Arg    ${0}    *    --duration 1000
+    Ctn Config Broker    module
+    Repeat Keyword    4 times    Ctn Start Stop Instances    20s
 
 
 *** Keywords ***

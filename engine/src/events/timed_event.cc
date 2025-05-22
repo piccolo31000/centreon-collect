@@ -123,7 +123,7 @@ void timed_event::_exec_event_command_check() {
   events_logger->trace("** External Command Check Event");
 
   // send data to event broker.
-  broker_external_command(NEBTYPE_EXTERNALCOMMAND_CHECK, CMD_NONE, NULL, NULL);
+  broker_external_command(NEBTYPE_EXTERNALCOMMAND_CHECK, CMD_NONE, NULL);
 }
 
 /**
@@ -195,23 +195,6 @@ void timed_event::_exec_event_check_reaper() {
   }
 }
 
-#ifdef LEGACY_CONF
-/**
- *  Execute orphan check.
- *
- */
-void timed_event::_exec_event_orphan_check() {
-  engine_logger(dbg_events, basic)
-      << "** Orphaned Host and Service Check Event";
-  events_logger->trace("** Orphaned Host and Service Check Event");
-
-  // check for orphaned hosts and services.
-  if (config->check_orphaned_hosts())
-    host::check_for_orphaned();
-  if (config->check_orphaned_services())
-    service::check_for_orphaned();
-}
-#else
 /**
  *  Execute orphan check.
  *
@@ -227,21 +210,7 @@ void timed_event::_exec_event_orphan_check() {
   if (pb_config.check_orphaned_services())
     service::check_for_orphaned();
 }
-#endif
 
-#ifdef LEGACY_CONF
-/**
- *  Execute retention save.
- *
- */
-void timed_event::_exec_event_retention_save() {
-  engine_logger(dbg_events, basic) << "** Retention Data Save Event";
-  events_logger->trace("** Retention Data Save Event");
-
-  // save state retention data.
-  retention::dump::save(config->state_retention_file());
-}
-#else
 /**
  *  Execute retention save.
  *
@@ -253,7 +222,6 @@ void timed_event::_exec_event_retention_save() {
   // save state retention data.
   retention::dump::save(pb_config.state_retention_file());
 }
-#endif
 
 /**
  *  Execute status save.
@@ -272,7 +240,6 @@ void timed_event::_exec_event_status_save() {
  *
  */
 void timed_event::_exec_event_scheduled_downtime() {
-  engine_logger(dbg_events, basic) << "** Scheduled Downtime Event";
   events_logger->trace("** Scheduled Downtime Event");
 
   // process scheduled downtime info.
@@ -341,18 +308,6 @@ void timed_event::_exec_event_hfreshness_check() {
 
   // check host result freshness.
   host::check_result_freshness();
-}
-
-/**
- *  Execute rescheduled checks.
- *
- */
-void timed_event::_exec_event_reschedule_checks() {
-  engine_logger(dbg_events, basic) << "** Reschedule Checks Event";
-  events_logger->trace("** Reschedule Checks Event");
-
-  // adjust scheduling of host and service checks.
-  events::loop::instance().adjust_check_scheduling();
 }
 
 /**
@@ -441,7 +396,7 @@ time_t adjust_timestamp_for_time_change(int64_t time_difference, time_t ts) {
  */
 int timed_event::handle_timed_event() {
   typedef void (timed_event::*exec_event)();
-  static std::array<exec_event, 19> tab_exec_event{
+  static std::array<exec_event, 18> tab_exec_event{
       &timed_event::_exec_event_service_check,
       &timed_event::_exec_event_command_check,
       &timed_event::_exec_event_log_rotation,
@@ -456,7 +411,6 @@ int timed_event::handle_timed_event() {
       &timed_event::_exec_event_expire_downtime,
       &timed_event::_exec_event_host_check,
       &timed_event::_exec_event_hfreshness_check,
-      &timed_event::_exec_event_reschedule_checks,
       &timed_event::_exec_event_expire_comment,
       &timed_event::_exec_event_expire_host_ack,
       &timed_event::_exec_event_expire_service_ack,
@@ -464,10 +418,6 @@ int timed_event::handle_timed_event() {
 
   engine_logger(dbg_functions, basic) << "handle_timed_event()";
   functions_logger->trace("handle_timed_event()");
-
-  // send event data to broker.
-  broker_timed_event(NEBTYPE_TIMEDEVENT_EXECUTE, NEBFLAG_NONE, NEBATTR_NONE,
-                     this, nullptr);
 
   engine_logger(dbg_events, basic) << "** Timed Event ** Type: " << event_type
                                    << ", Run Time: " << my_ctime(&run_time);
@@ -502,8 +452,8 @@ std::string const& timed_event::name() const noexcept {
       "EVENT_STATUS_SAVE",       "EVENT_SCHEDULED_DOWNTIME",
       "EVENT_SFRESHNESS_CHECK",  "EVENT_EXPIRE_DOWNTIME",
       "EVENT_HOST_CHECK",        "EVENT_HFRESHNESS_CHECK",
-      "EVENT_RESCHEDULE_CHECKS", "EVENT_EXPIRE_COMMENT",
-      "EVENT_EXPIRE_HOST_ACK",   "EVENT_EXPIRE_SERVICE_ACK"};
+      "EVENT_EXPIRE_COMMENT",    "EVENT_EXPIRE_HOST_ACK",
+      "EVENT_EXPIRE_SERVICE_ACK"};
 
   if (this->event_type < sizeof(event_names) / sizeof(event_names[0]))
     return event_names[this->event_type];

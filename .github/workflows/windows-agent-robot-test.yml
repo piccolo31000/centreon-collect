@@ -1,4 +1,4 @@
-name: Centreon Monitoring Agent Windows robot test
+name: windows-agent-robot-test
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -7,7 +7,7 @@ concurrency:
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 0 * * *'
+    - cron: '0 0 * * 1-5'
 
 jobs:
   get-environment:
@@ -35,7 +35,6 @@ jobs:
       package_extension: deb
       runner: centreon-collect
       arch: amd64
-      is_nightly: ${{ needs.get-environment.outputs.is_nightly }}
       only_robot_cma: true
     secrets:
       collect_s3_access_key: ${{ secrets.COLLECT_S3_ACCESS_KEY }}
@@ -69,7 +68,7 @@ jobs:
         run: wsl --list --online
 
       - name: install debian
-        uses: Vampire/setup-wsl@v4
+        uses: Vampire/setup-wsl@f40fb59d850112c9a292b0218bca8271305b9127 # v5.0.0
         with:
           wsl-version: 1
           distribution: Debian
@@ -95,7 +94,7 @@ jobs:
       - name: install robot framework
         run: |
           wsl pip3 install -U robotframework robotframework-databaselibrary robotframework-examples
-          wsl pip3 install pymysql python-dateutil grpcio grpcio_tools psutil
+          wsl pip3 install pymysql python-dateutil grpcio grpcio_tools psutil PyJWT
 
       - name: Compile Agent
         run: .github/scripts/windows-agent-compile.ps1
@@ -109,7 +108,7 @@ jobs:
           wsl cd $wsl_path `&`& .github/scripts/collect-setup-database.sh
 
       - name: Restore packages
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ./*.deb
           key: ${{ github.run_id }}-${{ github.sha }}-deb-centreon-collect-bullseye-amd64-${{ github.head_ref || github.ref_name }}
@@ -139,7 +138,7 @@ jobs:
 
       - name: Upload Test Results
         if: ${{ failure() }}
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: reports-cma-windows
           path: reports

@@ -29,11 +29,7 @@
 #include "com/centreon/engine/globals.hh"
 #include "com/centreon/engine/logging/logger.hh"
 #include "com/centreon/engine/statusdata.hh"
-#ifdef LEGACY_CONF
-#include "common/engine_legacy_conf/parser.hh"
-#else
 #include "common/engine_conf/parser.hh"
-#endif
 
 using namespace com::centreon::engine;
 using namespace com::centreon::engine::events;
@@ -53,7 +49,7 @@ void loop::clear() {
   _event_list_low.clear();
   _event_list_high.clear();
 
-  _need_reload = 0;
+  _need_reload = false;
   _reload_running = false;
 }
 
@@ -90,34 +86,15 @@ void loop::run() {
 /**
  *  Default constructor.
  */
-loop::loop() : _need_reload(0), _reload_running(false) {}
+loop::loop() : _need_reload(false), _reload_running(false) {}
 
-#ifdef LEGACY_CONF
-static void apply_conf(std::atomic<bool>* reloading) {
-  configuration::error_cnt err;
-  engine_logger(log_info_message, more) << "Starting to reload configuration.";
-  process_logger->info("Starting to reload configuration.");
-  try {
-    configuration::state config;
-    {
-      configuration::parser p;
-      std::string path(::config->cfg_main());
-      p.parse(path, config, err);
-    }
-    configuration::extended_conf::update_state(config);
-    configuration::applier::state::instance().apply(config, err);
-    engine_logger(log_info_message, basic)
-        << "Configuration reloaded, main loop continuing.";
-    process_logger->info("Configuration reloaded, main loop continuing.");
-  } catch (std::exception const& e) {
-    engine_logger(log_config_error, most) << "Error: " << e.what();
-    config_logger->error("Error: {}", e.what());
-  }
-  *reloading = false;
-  engine_logger(log_info_message, more) << "Reload configuration finished.";
-  process_logger->info("Reload configuration finished.");
-}
-#else
+/**
+ * @brief Reload the configuration and apply its difference with the current
+ * one.
+ *
+ * @param reloading A boolean to know if the configuration is currently
+ * reloading.
+ */
 static void apply_conf(std::atomic<bool>* reloading) {
   configuration::error_cnt err;
   process_logger->info("Starting to reload configuration.");
@@ -138,7 +115,6 @@ static void apply_conf(std::atomic<bool>* reloading) {
   *reloading = false;
   process_logger->info("Reload configuration finished.");
 }
-#endif
 
 /**
  *  Slot to dispatch Centreon Engine events.
@@ -162,7 +138,7 @@ void loop::_dispatching() {
 
     if (sighup) {
       com::centreon::logging::engine::instance().reopen();
-      ++_need_reload;
+      _need_reload = true;
       sighup = false;
     }
 
@@ -180,7 +156,7 @@ void loop::_dispatching() {
         engine_logger(log_info_message, most) << "Already reloading...";
         process_logger->info("Already reloading...");
       }
-      _need_reload = 0;
+      _need_reload = false;
     }
 
     // Get the current time.
@@ -189,16 +165,6 @@ void loop::_dispatching() {
 
     configuration::applier::state::instance().lock();
 
-#ifdef LEGACY_CONF
-    time_t time_change_threshold = config->time_change_threshold();
-    uint32_t max_parallel_service_checks =
-        config->max_parallel_service_checks();
-    bool execute_service_checks = config->execute_service_checks();
-    bool execute_host_checks = config->execute_host_checks();
-    uint32_t interval_length = config->interval_length();
-    double sleep_time = config->sleep_time();
-    int32_t command_check_interval = config->command_check_interval();
-#else
     time_t time_change_threshold = pb_config.time_change_threshold();
     uint32_t max_parallel_service_checks =
         pb_config.max_parallel_service_checks();
@@ -207,7 +173,6 @@ void loop::_dispatching() {
     uint32_t interval_length = pb_config.interval_length();
     double sleep_time = pb_config.sleep_time();
     int32_t command_check_interval = pb_config.command_check_interval();
-#endif
 
     // Hey, wait a second...  we traveled back in time!
     if (current_time < _last_time)
@@ -216,7 +181,7 @@ void loop::_dispatching() {
           static_cast<unsigned long>(current_time));
     // Else if the time advanced over the specified threshold,
     // try and compensate...
-    else if ((current_time - _last_time) >=
+    else if (current_time - _last_time >=
              static_cast<time_t>(time_change_threshold))
       compensate_for_system_time_change(
           static_cast<unsigned long>(_last_time),
@@ -469,7 +434,7 @@ void loop::_dispatching() {
       if (command_check_interval == -1) {
         // Send data to event broker.
         broker_external_command(NEBTYPE_EXTERNALCOMMAND_CHECK, CMD_NONE,
-                                nullptr, nullptr);
+                                nullptr);
       }
 
       auto t1 = std::chrono::system_clock::now();
@@ -487,10 +452,6 @@ void loop::_dispatching() {
       _sleep_event.run_time = current_time;
       _sleep_event.event_data = (void*)&stime;
 
-      // Send event data to broker.
-      broker_timed_event(NEBTYPE_TIMEDEVENT_SLEEP, NEBFLAG_NONE, NEBATTR_NONE,
-                         &_sleep_event, nullptr);
-
       auto t2 = std::chrono::system_clock::now();
       auto laps = t2 - t1;
       if (laps < delay) {
@@ -500,190 +461,6 @@ void loop::_dispatching() {
     }
     configuration::applier::state::instance().unlock();
   }
-}
-
-/**
- *  Adjusts scheduling of host and service checks.
- */
-void loop::adjust_check_scheduling() {
-  static double const projected_host_check_overhead(0.1);
-  static double const projected_service_check_overhead(0.1);
-  double current_exec_time(0.0);
-  double current_exec_time_offset(0.0);
-  double exec_time_factor(0.0);
-  double inter_check_delay(0.0);
-  double last_check_exec_time(0.0);
-  double total_check_exec_time(0.0);
-  int adjust_scheduling(false);
-  int total_checks(0);
-  time_t last_check_time(0L);
-  host* hst(nullptr);
-  com::centreon::engine::service* svc(nullptr);
-
-  engine_logger(dbg_functions, basic) << "adjust_check_scheduling()";
-  functions_logger->trace("adjust_check_scheduling()");
-
-  /* TODO:
-     - Track host check overhead on a per-host basis
-     - Figure out how to calculate service check overhead
-  */
-
-  // determine our adjustment window.
-  time_t current_time(time(nullptr));
-  time_t first_window_time(current_time);
-#ifdef LEGACY_CONF
-  time_t last_window_time(first_window_time +
-                          config->auto_rescheduling_window());
-#else
-  time_t last_window_time(first_window_time +
-                          pb_config.auto_rescheduling_window());
-#endif
-
-  // get current scheduling data.
-  for (timed_event_list::iterator it{_event_list_low.begin()},
-       end{_event_list_low.end()};
-       it != end; ++it) {
-    // skip events outside of our current window.
-    if ((*it)->run_time <= first_window_time)
-      continue;
-    if ((*it)->run_time > last_window_time)
-      break;
-
-    if ((*it)->event_type == timed_event::EVENT_HOST_CHECK) {
-      if (!(hst = (host*)(*it)->event_data))
-        continue;
-
-      // ignore forced checks.
-      if (hst->get_check_options() & CHECK_OPTION_FORCE_EXECUTION)
-        continue;
-
-      // does the last check "bump" into this one?
-      if ((last_check_time + last_check_exec_time) > (*it)->run_time)
-        adjust_scheduling = true;
-
-      last_check_time = (*it)->run_time;
-
-      // calculate time needed to perform check.
-      // NOTE: host check execution time is not taken into account,
-      // as scheduled host checks are run in parallel.
-      last_check_exec_time = projected_host_check_overhead;
-      total_check_exec_time += last_check_exec_time;
-    } else if ((*it)->event_type == timed_event::EVENT_SERVICE_CHECK) {
-      if (!(svc = (com::centreon::engine::service*)(*it)->event_data))
-        continue;
-
-      // ignore forced checks.
-      if (svc->get_check_options() & CHECK_OPTION_FORCE_EXECUTION)
-        continue;
-
-      // does the last check "bump" into this one?
-      if ((last_check_time + last_check_exec_time) > (*it)->run_time)
-        adjust_scheduling = true;
-
-      last_check_time = (*it)->run_time;
-
-      // calculate time needed to perform check.
-      // NOTE: service check execution time is not taken into
-      // account, as service checks are run in parallel.
-      last_check_exec_time = projected_service_check_overhead;
-      total_check_exec_time += last_check_exec_time;
-    } else
-      continue;
-
-    ++total_checks;
-  }
-
-  // nothing to do...
-  if (total_checks == 0 || adjust_scheduling == false)
-    return;
-
-#ifdef LEGACY_CONF
-  if ((unsigned long)total_check_exec_time >
-      config->auto_rescheduling_window()) {
-    inter_check_delay = 0.0;
-    exec_time_factor = (double)((double)config->auto_rescheduling_window() /
-                                total_check_exec_time);
-  } else {
-    inter_check_delay = (double)((((double)config->auto_rescheduling_window()) -
-                                  total_check_exec_time) /
-                                 (double)(total_checks * 1.0));
-    exec_time_factor = 1.0;
-  }
-#else
-  if ((unsigned long)total_check_exec_time >
-      pb_config.auto_rescheduling_window()) {
-    inter_check_delay = 0.0;
-    exec_time_factor = (double)((double)pb_config.auto_rescheduling_window() /
-                                total_check_exec_time);
-  } else {
-    inter_check_delay =
-        (double)((((double)pb_config.auto_rescheduling_window()) -
-                  total_check_exec_time) /
-                 (double)(total_checks * 1.0));
-    exec_time_factor = 1.0;
-  }
-#endif
-
-  auto compute_new_run_time = [](double current_exec_time_offset,
-                                 double current_icd_offset,
-                                 time_t first_window_time) {
-    double offset = current_exec_time_offset + current_icd_offset;
-    time_t retval = first_window_time + static_cast<unsigned long>(offset);
-    return retval;
-  };
-  // adjust check scheduling.
-  double current_icd_offset(inter_check_delay / 2.0);
-  for (timed_event_list::iterator it = _event_list_low.begin(),
-                                  end = _event_list_low.end();
-       it != end; ++it) {
-    // skip events outside of our current window.
-    if ((*it)->run_time <= first_window_time)
-      continue;
-    if ((*it)->run_time > last_window_time)
-      break;
-
-    if ((*it)->event_type == timed_event::EVENT_HOST_CHECK) {
-      if (!(hst = (host*)(*it)->event_data))
-        continue;
-
-      // ignore forced checks.
-      if (hst->get_check_options() & CHECK_OPTION_FORCE_EXECUTION)
-        continue;
-
-      current_exec_time =
-          (hst->get_execution_time() + projected_host_check_overhead) *
-          exec_time_factor;
-      time_t new_run_time = compute_new_run_time(
-          current_exec_time_offset, current_icd_offset, first_window_time);
-      (*it)->run_time = new_run_time;
-      hst->set_next_check(new_run_time);
-      hst->update_status();
-    } else if ((*it)->event_type == timed_event::EVENT_SERVICE_CHECK) {
-      if (!(svc = (com::centreon::engine::service*)(*it)->event_data))
-        continue;
-
-      // ignore forced checks.
-      if (svc->get_check_options() & CHECK_OPTION_FORCE_EXECUTION)
-        continue;
-
-      // NOTE: service check execution time is not taken into
-      // account, as service checks are run in parallel.
-      current_exec_time = projected_service_check_overhead * exec_time_factor;
-      time_t new_run_time = compute_new_run_time(
-          current_exec_time_offset, current_icd_offset, first_window_time);
-      (*it)->run_time = new_run_time;
-      svc->set_next_check(new_run_time);
-      svc->update_status();
-    } else
-      continue;
-
-    current_icd_offset += inter_check_delay;
-    current_exec_time_offset += current_exec_time;
-  }
-
-  // resort event list (some events may be out of order at
-  // this point).
-  resort_event_list(events::loop::low);
 }
 
 /**
@@ -909,9 +686,6 @@ void loop::remove_downtime(uint64_t downtime_id) {
     if ((*it)->event_type != timed_event::EVENT_SCHEDULED_DOWNTIME)
       continue;
     if (((uint64_t)(*it)->event_data) == downtime_id) {
-      // send event data to broker.
-      broker_timed_event(NEBTYPE_TIMEDEVENT_REMOVE, NEBFLAG_NONE, NEBATTR_NONE,
-                         it->get(), nullptr);
       _event_list_high.erase(it);
       break;
     }
@@ -1004,7 +778,6 @@ timed_event_list::iterator loop::find_event(loop::priority priority,
  */
 void loop::reschedule_event(std::unique_ptr<timed_event>&& event,
                             loop::priority priority) {
-  engine_logger(dbg_functions, basic) << "reschedule_event()";
   functions_logger->trace("reschedule_event()");
 
   // reschedule recurring events...
@@ -1021,9 +794,8 @@ void loop::reschedule_event(std::unique_ptr<timed_event>&& event,
 
     // normal recurring events.
     else {
-      time_t current_time(0L);
       event->run_time = event->run_time + event->event_interval;
-      time(&current_time);
+      time_t current_time = time(nullptr);
       if (event->run_time < current_time)
         event->run_time = current_time;
     }
@@ -1057,11 +829,6 @@ void loop::resort_event_list(loop::priority priority) {
                const std::unique_ptr<timed_event>& second) {
               return first->run_time < second->run_time;
             });
-
-  // send event data to broker.
-  for (auto& evt : *list)
-    broker_timed_event(NEBTYPE_TIMEDEVENT_ADD, NEBFLAG_NONE, NEBATTR_NONE,
-                       evt.get(), nullptr);
 }
 
 /**
