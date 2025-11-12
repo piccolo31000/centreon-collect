@@ -94,12 +94,24 @@ config::config(const std::string& registry_key) {
   _log_file = get_sz_reg_or_default("log_file", "");
   _log_max_file_size = get_unsigned("log_max_file_size");
   _log_max_files = get_unsigned("log_max_files");
-  _encryption = get_bool("encryption");
+  std::string encryption = get_sz_reg_or_default("encryption", "no");
+  if (encryption == "full") {
+    _security_mode = common::grpc::grpc_config::TLS_SECURE;
+  } else if (encryption == "insecure") {
+    _security_mode = common::grpc::grpc_config::TLS_INSECURE;
+  } else if (encryption == "no") {
+    _security_mode = common::grpc::grpc_config::NONE;
+  } else {
+    RegCloseKey(h_key);
+    throw exceptions::msg_fmt(
+        "invalid value for registry key 'encryption' ('{}'), accepted values "
+        "are: full, insecure, no",
+        encryption);
+  }
   _public_cert_file = get_sz_reg_or_default("public_cert", "");
   _private_key_file = get_sz_reg_or_default("private_key", "");
   _ca_certificate_file = get_sz_reg_or_default("ca_certificate", "");
   _ca_name = get_sz_reg_or_default("ca_name", "");
-  _token = get_sz_reg_or_default("token", "");
   _host = get_sz_reg_or_default("host", "");
   if (_host.empty()) {
     _host = boost::asio::ip::host_name();
@@ -108,6 +120,11 @@ config::config(const std::string& registry_key) {
   _second_max_reconnect_backoff =
       get_unsigned("second_max_reconnect_backoff", 60);
   _max_message_length = get_unsigned("max_message_length", 4) * 1024 * 1024;
+
+  if (_reverse_connection)
+    _trusted_tokens.insert(get_sz_reg_or_default("token", ""));
+  else
+    _token = get_sz_reg_or_default("token", "");
 
   RegCloseKey(h_key);
 }

@@ -2140,6 +2140,7 @@ static void forward_pb_group(int type, const G* group_data) {
           type == NEBTYPE_HOSTGROUP_ADD ||
           (type == NEBTYPE_HOSTGROUP_UPDATE && !group_data->members.empty()));
       obj.set_name(common::check_string_utf8(group_data->get_group_name()));
+      obj.set_alias(group_data->get_alias());
 
       // Send host group event.
       if (group_data->get_id()) {
@@ -2663,6 +2664,9 @@ static void forward_pb_host_status(const host* hst,
       neb_logger,
       "callbacks: generating pb host status check result event protobuf");
 
+  // neb_logger->error(" attrib: {} Stacktrace:\n{}", hsd->attributes,
+  //                   get_stack_trace(20));
+
   auto handle_acknowledgement = [](uint16_t state, auto& hscr) {
     auto ack = cbm->find_acknowledgement(hscr.host_id(), 0u);
     if (ack && hscr.acknowledgement_type() == AckType::NONE) {
@@ -2685,19 +2689,26 @@ static void forward_pb_host_status(const host* hst,
   if (attributes != engine::host::STATUS_ALL) {
     auto h{std::make_shared<neb::pb_adaptive_host_status>()};
     com::centreon::broker::AdaptiveHostStatus& host = h.get()->mut_obj();
-    if (attributes & engine::host::STATUS_DOWNTIME_DEPTH) {
+    if (attributes != engine::notifier::status_attribute::STATUS_NONE) {
       host.set_host_id(hst->host_id());
-      host.set_scheduled_downtime_depth(hst->get_scheduled_downtime_depth());
+      if (attributes & engine::host::STATUS_DOWNTIME_DEPTH) {
+        host.set_scheduled_downtime_depth(hst->get_scheduled_downtime_depth());
+      }
+      if (attributes & engine::host::STATUS_NOTIFICATION_NUMBER) {
+        host.set_notification_number(hst->get_notification_number());
+      }
+      if (attributes & engine::host::STATUS_ACKNOWLEDGEMENT) {
+        host.set_acknowledgement_type(hst->get_acknowledgement());
+      }
+      if (attributes & engine::notifier::status_attribute::NEXT_CHECK) {
+        host.set_next_check(hst->get_next_check());
+      }
+      if (attributes &
+          engine::notifier::status_attribute::SHOULD_BE_SCHEDULED) {
+        host.set_should_be_scheduled(hst->get_should_be_scheduled());
+      }
+      cbm->write(h);
     }
-    if (attributes & engine::host::STATUS_NOTIFICATION_NUMBER) {
-      host.set_host_id(hst->host_id());
-      host.set_notification_number(hst->get_notification_number());
-    }
-    if (attributes & engine::host::STATUS_ACKNOWLEDGEMENT) {
-      host.set_host_id(hst->host_id());
-      host.set_acknowledgement_type(hst->get_acknowledgement());
-    }
-    cbm->write(h);
 
     // Acknowledgement event.
     handle_acknowledgement(state, host);
@@ -4145,6 +4156,7 @@ void broker_program_state(int type, int flags [[maybe_unused]]) {
     inst.set_version(get_program_version());
     inst.set_instance_id(cbm->poller_id());
     inst.set_name(cbm->poller_name());
+    inst.set_is_encryption_ready(credentials_decrypt.get() != nullptr);
 
     switch (type) {
       case NEBTYPE_PROCESS_EVENTLOOPSTART: {
@@ -4647,22 +4659,27 @@ static void forward_pb_service_status(const engine::service* svc,
     auto as = std::make_shared<neb::pb_adaptive_service_status>();
     AdaptiveServiceStatus& asscr = as.get()->mut_obj();
     fill_service_type(asscr, svc);
-    if (attributes & engine::service::STATUS_DOWNTIME_DEPTH) {
+    if (attributes != engine::notifier::status_attribute::STATUS_NONE) {
       asscr.set_host_id(svc->host_id());
       asscr.set_service_id(svc->service_id());
-      asscr.set_scheduled_downtime_depth(svc->get_scheduled_downtime_depth());
+      if (attributes & engine::service::STATUS_DOWNTIME_DEPTH) {
+        asscr.set_scheduled_downtime_depth(svc->get_scheduled_downtime_depth());
+      }
+      if (attributes & engine::service::STATUS_NOTIFICATION_NUMBER) {
+        asscr.set_notification_number(svc->get_notification_number());
+      }
+      if (attributes & engine::service::STATUS_ACKNOWLEDGEMENT) {
+        asscr.set_acknowledgement_type(svc->get_acknowledgement());
+      }
+      if (attributes & engine::notifier::status_attribute::NEXT_CHECK) {
+        asscr.set_next_check(svc->get_next_check());
+      }
+      if (attributes &
+          engine::notifier::status_attribute::SHOULD_BE_SCHEDULED) {
+        asscr.set_should_be_scheduled(svc->get_should_be_scheduled());
+      }
+      cbm->write(as);
     }
-    if (attributes & engine::service::STATUS_NOTIFICATION_NUMBER) {
-      asscr.set_host_id(svc->host_id());
-      asscr.set_service_id(svc->service_id());
-      asscr.set_notification_number(svc->get_notification_number());
-    }
-    if (attributes & engine::service::STATUS_ACKNOWLEDGEMENT) {
-      asscr.set_host_id(svc->host_id());
-      asscr.set_service_id(svc->service_id());
-      asscr.set_acknowledgement_type(svc->get_acknowledgement());
-    }
-    cbm->write(as);
 
     // Acknowledgement event.
     handle_acknowledgement(state, asscr);

@@ -144,6 +144,7 @@ set( SRC_WINDOWS
   ${NATIVE_SRC}/check_process.cc
   ${NATIVE_SRC}/check_uptime.cc
   ${NATIVE_SRC}/check_counter.cc
+  ${NATIVE_SRC}/check_sched.cc
   ${NATIVE_SRC}/event_log/container.cc
   ${NATIVE_SRC}/event_log/data.cc
   ${NATIVE_SRC}/event_log/uniq.cc
@@ -154,6 +155,7 @@ set( SRC_WINDOWS
   ${NATIVE_SRC}/process/process_container.cc
   ${NATIVE_SRC}/process/process_data.cc
   ${NATIVE_SRC}/process/process_filter.cc
+  ${NATIVE_SRC}/check_files.cc
 )
 
 set( SRC_LINUX
@@ -182,8 +184,8 @@ add_library(centagent_lib STATIC
 
 include_directories(
   ${INCLUDE_DIR}
-  ${NATIVE_INC} 
-  ${SRC_DIR} 
+  ${NATIVE_INC}
+  ${SRC_DIR}
   ${CMAKE_SOURCE_DIR}/common/inc
   ${CMAKE_SOURCE_DIR}/common/grpc/inc
   ${CMAKE_SOURCE_DIR}/common/process/inc
@@ -198,14 +200,16 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
 
   target_link_libraries(
     ${CENTREON_AGENT} PRIVATE
-    -L${PROTOBUF_LIB_DIR}
-    gRPC::gpr gRPC::grpc gRPC::grpc++ gRPC::grpc++_alts
+    -Wl,--whole-archive
+    gRPC::grpc++
+    -Wl,--no-whole-archive
+    absl::any absl::log absl::base absl::bits
     centagent_lib
     centreon_common
     centreon_grpc
     centreon_process
-    -L${Boost_LIBRARY_DIR_RELEASE}
-    boost_program_options
+    ctncrypto
+    Boost::program_options
     -static-libgcc -static-libstdc++
     fmt::fmt
     stdc++fs)
@@ -218,11 +222,15 @@ else()
     centreon_common
     centreon_grpc
     centreon_process
-    gRPC::gpr gRPC::grpc gRPC::grpc++ gRPC::grpc++_alts
+    ctncrypto
+    gRPC::grpc++
     absl::any absl::log absl::base absl::bits
     Boost::program_options
+    Boost::process
     fmt::fmt
-    pdh)
+    pdh
+    taskschd
+    Version.lib)
 
   if (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     # The linker needs to know to retain debug symbols.

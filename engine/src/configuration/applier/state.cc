@@ -52,6 +52,7 @@
 #include "com/centreon/engine/retention/applier/state.hh"
 #include "com/centreon/engine/version.hh"
 #include "com/centreon/engine/xsddefault.hh"
+#include "common/crypto/aes256.hh"
 #include "common/log_v2/log_v2.hh"
 
 using namespace com::centreon;
@@ -62,6 +63,9 @@ using com::centreon::common::log_v2::log_v2;
 using com::centreon::engine::logging::broker_sink_mt;
 
 static bool has_already_been_loaded(false);
+
+constexpr std::string_view _engine_context_path =
+    "/etc/centreon-engine/engine-context.json";
 
 /**
  * @brief increase soft limit of opened file descriptors
@@ -1531,6 +1535,27 @@ void applier::state::_processing(configuration::State& new_cfg,
     if (!verify_config)
       applier::scheduler::instance().apply(new_cfg, diff_hosts, diff_services,
                                            diff_anomalydetections);
+
+    // we first reload credentials keys before decrypt macros
+    try {
+      if (std::filesystem::is_regular_file(_engine_context_path) &&
+          std::filesystem::file_size(_engine_context_path) > 0) {
+        std::unique_ptr<com::centreon::common::crypto::aes256> new_file =
+            std::make_unique<com::centreon::common::crypto::aes256>(
+                _engine_context_path);
+        // we test validity of keys
+        std::string encrypted = new_file->encrypt("test encrypt");
+        if (new_file->decrypt(encrypted) == "test encrypt") {
+          credentials_decrypt = std::move(new_file);
+        } else {
+          throw std::invalid_argument(
+              "this keys are unable to crypt and decrypt a sentence");
+        }
+      }
+    } catch (const std::exception& e) {
+      SPDLOG_LOGGER_ERROR(config_logger, "We can not read {}: {}",
+                          _engine_context_path, e.what());
+    }
 
     // Apply new global on the current state.
     if (!verify_config) {

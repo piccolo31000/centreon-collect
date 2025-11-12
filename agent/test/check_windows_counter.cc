@@ -17,7 +17,6 @@
  */
 
 #include <gtest/gtest.h>
-#include <iostream>
 
 #include "check.hh"
 #include "com/centreon/common/rapidjson_helper.hh"
@@ -29,11 +28,22 @@ extern std::shared_ptr<asio::io_context> g_io_context;
 using namespace com::centreon::agent;
 using namespace std::string_literals;
 
+class counter_check_windows_test : public testing::Test {
+ public:
+  Service serv;
+
+  counter_check_windows_test() {
+    serv.set_service_description("serv");
+    serv.set_command_name("cmd_name");
+    serv.set_command_line("cmd_line");
+  }
+};
+
 /*
   Verify that the check_counter constructor works as expected.
   It should parse the JSON arguments and set the appropriate member variables.
 */
-TEST(counter_check_windows, constructor) {
+TEST_F(counter_check_windows_test, constructor) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\LogicalDisk(*)\\% Free Space",
@@ -42,8 +52,7 @@ TEST(counter_check_windows, constructor) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -62,8 +71,7 @@ TEST(counter_check_windows, constructor) {
     "use_english": true
 })"_json;
   check_counter checker1(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args1, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args1, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -82,8 +90,7 @@ TEST(counter_check_windows, constructor) {
         "use_english": true
         })"_json;
   check_counter checker2(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args2, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args2, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -101,7 +108,7 @@ TEST(counter_check_windows, constructor) {
   Verify that the check_counter class can handle a single return value.
   It should correctly compute the status and output based on the counter value.
 */
-TEST(counter_check_windows, single_return) {
+TEST_F(counter_check_windows_test, single_return) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\System\\Processes",
@@ -111,8 +118,7 @@ TEST(counter_check_windows, single_return) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -141,7 +147,7 @@ TEST(counter_check_windows, single_return) {
   It should correctly compute the status and output based on the counter value.
   also test warning status and warning count
 */
-TEST(counter_check_windows, multiple_return) {
+TEST_F(counter_check_windows_test, multiple_return) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\LogicalDisk(*)\\% Free Space",
@@ -152,8 +158,7 @@ TEST(counter_check_windows, multiple_return) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -183,7 +188,7 @@ TEST(counter_check_windows, multiple_return) {
   samples. It should correctly compute the status and output based on the
   counter value. also test critical status and critical count
 */
-TEST(counter_check_windows, need_two_samples) {
+TEST_F(counter_check_windows_test, need_two_samples) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -193,8 +198,7 @@ TEST(counter_check_windows, need_two_samples) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -228,7 +232,7 @@ TEST(counter_check_windows, need_two_samples) {
 */
 // Test if the warning status is correctly computed, and the output is well
 // formatted keywords tested: {status}, {problem-list}, {label}, {value}
-TEST(counter_check_windows, complex_rules) {
+TEST_F(counter_check_windows_test, complex_rules) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -241,8 +245,7 @@ TEST(counter_check_windows, complex_rules) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -267,7 +270,7 @@ TEST(counter_check_windows, complex_rules) {
 }
 
 // test if the critical status is set
-TEST(counter_check_windows, complex_rules_2) {
+TEST_F(counter_check_windows_test, complex_rules_2) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -281,8 +284,7 @@ TEST(counter_check_windows, complex_rules_2) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -307,7 +309,7 @@ TEST(counter_check_windows, complex_rules_2) {
 }
 // test the keywords {crit-list} and {warn-list} in the output-syntax
 // the label _total should be only in the crit-list and not in the warn-list
-TEST(counter_check_windows, complex_rules_3) {
+TEST_F(counter_check_windows_test, complex_rules_3) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -321,8 +323,7 @@ TEST(counter_check_windows, complex_rules_3) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -346,7 +347,7 @@ TEST(counter_check_windows, complex_rules_3) {
 }
 
 // test the keywords {ok_list}
-TEST(counter_check_windows, complex_rules_4) {
+TEST_F(counter_check_windows_test, complex_rules_4) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -360,8 +361,7 @@ TEST(counter_check_windows, complex_rules_4) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -390,7 +390,7 @@ TEST(counter_check_windows, complex_rules_4) {
 
 // test the keywords {warn-count},{crit-count},{ok-count},{problem-count} and
 // {total} in the output-syntax
-TEST(counter_check_windows, complex_rules_5) {
+TEST_F(counter_check_windows_test, complex_rules_5) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -405,8 +405,7 @@ TEST(counter_check_windows, complex_rules_5) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -430,7 +429,7 @@ TEST(counter_check_windows, complex_rules_5) {
 
 // test the keywords {warn-list} and {crit-list} and also the count for critical
 // status
-TEST(counter_check_windows, complex_rules_6) {
+TEST_F(counter_check_windows_test, complex_rules_6) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -445,8 +444,7 @@ TEST(counter_check_windows, complex_rules_6) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -471,7 +469,7 @@ TEST(counter_check_windows, complex_rules_6) {
   ASSERT_EQ(perf.size(), 12);
 }
 // test the complex rultes for warning
-TEST(counter_check_windows, complex_rules_7) {
+TEST_F(counter_check_windows_test, complex_rules_7) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -486,8 +484,7 @@ TEST(counter_check_windows, complex_rules_7) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&
@@ -510,7 +507,7 @@ TEST(counter_check_windows, complex_rules_7) {
 }
 
 // test the complex rules for critical status
-TEST(counter_check_windows, complex_rules_8) {
+TEST_F(counter_check_windows_test, complex_rules_8) {
   using namespace com::centreon::common::literals;
   rapidjson::Document check_args =
       R"({"counter": "\\Process V2(*)\\Thread Count",
@@ -524,8 +521,7 @@ TEST(counter_check_windows, complex_rules_8) {
     })"_json;
 
   check_counter checker(
-      g_io_context, spdlog::default_logger(), {}, {}, "serv"s, "cmd_name"s,
-      "cmd_line"s, check_args, nullptr,
+      g_io_context, spdlog::default_logger(), {}, serv, check_args, nullptr,
       []([[maybe_unused]] const std::shared_ptr<check>& caller,
          [[maybe_unused]] int status,
          [[maybe_unused]] const std::list<com::centreon::common::perfdata>&

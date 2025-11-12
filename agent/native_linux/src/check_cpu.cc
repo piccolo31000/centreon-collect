@@ -165,11 +165,8 @@ static const absl::flat_hash_map<std::string_view, cpu_to_status_constructor>
  * @param io_context
  * @param logger
  * @param first_start_expected start expected
- * @param check_interval check interval between two checks (not only this but
  * also others)
  * @param serv service
- * @param cmd_name
- * @param cmd_line
  * @param args native plugin arguments
  * @param cnf engine configuration received object
  * @param handler called at measure completion
@@ -177,10 +174,7 @@ static const absl::flat_hash_map<std::string_view, cpu_to_status_constructor>
 check_cpu::check_cpu(const std::shared_ptr<asio::io_context>& io_context,
                      const std::shared_ptr<spdlog::logger>& logger,
                      time_point first_start_expected,
-                     duration check_interval,
-                     const std::string& serv,
-                     const std::string& cmd_name,
-                     const std::string& cmd_line,
+                     const Service& serv,
                      const rapidjson::Value& args,
                      const engine_to_agent_request_ptr& cnf,
                      check::completion_handler&& handler,
@@ -189,10 +183,7 @@ check_cpu::check_cpu(const std::shared_ptr<asio::io_context>& io_context,
           io_context,
           logger,
           first_start_expected,
-          check_interval,
           serv,
-          cmd_name,
-          cmd_line,
           args,
           cnf,
           std::move(handler),
@@ -206,8 +197,9 @@ check_cpu::check_cpu(const std::shared_ptr<asio::io_context>& io_context,
       auto cpu_to_status_search = _label_to_cpu_to_status.find(
           absl::AsciiStrToLower(member_iter->name.GetString()));
       if (cpu_to_status_search != _label_to_cpu_to_status.end()) {
-        std::optional<double> val = get_double(
-            cmd_name, member_iter->name.GetString(), member_iter->value, true);
+        std::optional<double> val =
+            get_double(get_command_name(), member_iter->name.GetString(),
+                       member_iter->value, true);
         if (val) {
           check_cpu_detail::cpu_to_status cpu_checker =
               cpu_to_status_search->second(*val / 100);
@@ -219,7 +211,7 @@ check_cpu::check_cpu(const std::shared_ptr<asio::io_context>& io_context,
         }
       } else if (member_iter->name != "cpu-detailed") {
         SPDLOG_LOGGER_ERROR(logger, "command: {}, unknown parameter: {}",
-                            cmd_name, member_iter->name);
+                            get_command_name(), member_iter->name);
       }
     }
   }

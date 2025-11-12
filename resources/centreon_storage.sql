@@ -45,6 +45,7 @@ CREATE TABLE `instances` (
   `version` varchar(16) DEFAULT NULL,
   `deleted` tinyint(1) NOT NULL DEFAULT '0',
   `outdated` tinyint(1) NOT NULL DEFAULT '0',
+  `is_encryption_ready` tinyint(1) NOT NULL DEFAULT '0',
   PRIMARY KEY (`instance_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
@@ -628,7 +629,6 @@ CREATE TABLE `index_data` (
   `must_be_rebuild` enum('0','1','2') DEFAULT '0',
   `storage_type` enum('0','1','2') DEFAULT '2',
   `to_delete` int(1) DEFAULT '0',
-  `rrd_retention` int(11) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `host_service_unique_id` (`host_id`,`service_id`),
   KEY `host_name` (`host_name`),
@@ -1516,13 +1516,13 @@ DROP TABLE IF EXISTS mod_bam_reporting_timeperiods;
 CREATE TABLE mod_bam_reporting_timeperiods (
   timeperiod_id int NOT NULL,
   name varchar(200) default NULL,
-  sunday varchar(200) default NULL,
-  monday varchar(200) default NULL,
-  tuesday varchar(200) default NULL,
-  wednesday varchar(200) default NULL,
-  thursday varchar(200) default NULL,
-  friday varchar(200) default NULL,
-  saturday varchar(200) default NULL,
+  sunday varchar(2048) default NULL,
+  monday varchar(2048) default NULL,
+  tuesday varchar(2048) default NULL,
+  wednesday varchar(2048) default NULL,
+  thursday varchar(2048) default NULL,
+  friday varchar(2048) default NULL,
+  saturday varchar(2048) default NULL,
 
   PRIMARY KEY (timeperiod_id)
 ) ENGINE=InnoDB CHARACTER SET utf8;

@@ -16,6 +16,7 @@ ${pullwss_poller_config}      ${ROOT_CONFIG}pullwss_poller_config.yaml
 ${push_central_config}        ${ROOT_CONFIG}push_central_config.yaml
 ${push_poller_config}         ${ROOT_CONFIG}push_poller_config.yaml
 ${gorgone_core_config}        ${ROOT_CONFIG}gorgone_core_central.yaml
+${MOCKOON_LOG_FILE}           /tmp/mockoon.log
 
 ${DBHOST}                   127.0.0.1
 ${DBPORT}                   3306
@@ -29,6 +30,8 @@ Start Gorgone
     [Arguments]    ${SEVERITY}    ${ALIAS}
     ${process}    Start Process
     ...    /usr/bin/perl
+    ...    -I/centreon-collect/gorgone
+    ...    -I/centreon-collect/perl-libs/lib
     ...    ${gorgone_binary}
     ...    --config
     ...    /etc/centreon-gorgone/${ALIAS}/includer.yaml
@@ -48,7 +51,55 @@ Stop Gorgone And Remove Gorgone Config
         ${result}    Terminate Process    ${process}
         BuiltIn.Run Keyword And Continue On Failure    Should Be True    ${result.rc} == -15 or ${result.rc} == 0    Gorgone ${process} badly stopped, code returned is ${result.rc}.
     END
+    # this sudo is added by our robot test to emulate the sudo command when we are root in a container.
+    ${output}=    Run    id -u
+    IF    ${output} == 0
+        Run    rm -f /usr/local/bin/sudo
+    END
+    
+Start Mockoon
+    [Arguments]    ${MOCKOON_JSON}
+    Remove File    ${MOCKOON_LOG_FILE}
 
+    ${time_start}    Get Time    str=epoch
+
+    ${process}    Start Process
+    ...    mockoon-cli
+    ...    start
+    ...    --data
+    ...    ${MOCKOON_JSON}
+    ...    --port
+    ...    80
+    ...    stdout=${MOCKOON_LOG_FILE}
+
+    Wait Until Created    ${MOCKOON_LOG_FILE}
+    Wait Until Keyword Succeeds
+    ...     30
+    ...     1
+    ...     File Should Not Be Empty	${MOCKOON_LOG_FILE}
+
+    ${time_end}    Get Time    str=epoch
+    ${duration} =     Evaluate    ${time_end} - ${time_start}
+    Log To Console    Mockoon finished starting after ${duration} seconds
+
+Stop Mockoon
+    Terminate All Processes
+    #Remove File    ${MOCKOON_LOG_FILE}
+
+Setup Vault
+    Run    mkdir -p /var/lib/centreon/vault/ /usr/share/centreon/
+    Copy File    ${ROOT_CONFIG}vault.json    /var/lib/centreon/vault/vault.json
+    Copy File    ${ROOT_CONFIG}vault-env     /usr/share/centreon/.env
+
+Setup Sudo
+    [Documentation]    This keyword setup a simple sudo command for when we are root in a container which don't have sudo installed.
+    ${output}=    Run    id -u
+    Log To Console    ${CURDIR}${/}sudo
+    IF    ${output} == 0
+        Run    cp ${CURDIR}${/}sudo /usr/local/bin/sudo
+        Run    chmod +x /usr/local/bin/sudo
+        Run    chown root:root /usr/local/bin/sudo
+    END
 Gorgone Execute Sql
     [Arguments]    ${sql_file}
     ${length}    Get Length    ${sql_file}
@@ -85,6 +136,11 @@ Setup Gorgone Config
 
 Check Poller Is Connected
     [Arguments]    ${port}=    ${expected_nb}=
+
+    # let's call the log api to force a gorgone GETLOG message to be sent to the poller.
+    # we don't want to parse the output because we don't have any log to check.
+    ${response}=    GET  http://127.0.0.1:8085/api/nodes/2/log/initLogRobot
+
     Log To Console    checking TCP connection is established...
     FOR    ${i}    IN RANGE    40
         Sleep    4
@@ -101,8 +157,9 @@ Check Poller Communicate
     [Arguments]    ${poller_id}    ${max_failed_attempt}=0
     ${response}     Set Variable    ${EMPTY}
     Log To Console    checking Gorgone see poller in rest api response...
-    FOR    ${i}    IN RANGE    25
-        Sleep    5
+    FOR    ${i}    IN RANGE    30
+        Sleep    1
+        ${none}=    GET  http://127.0.0.1:8085/api/internal/nodes/2/ping
         ${response}=    GET  http://127.0.0.1:8085/api/internal/constatus
         Log    ${response.json()}
         IF    not ${response.json()}[data]
@@ -113,12 +170,13 @@ Check Poller Communicate
         END
     END
     Log To Console    json response : ${response.json()}
-    Should Be True    ${i} < 24    timeout after ${i} time waiting for poller status in gorgone rest api (/api/internal/constatus) : ${response.json()}
+    Should Be True    ${i} < 29    timeout after ${i} time waiting for poller status in gorgone rest api (/api/internal/constatus) : ${response.json()}
     Should Be True    ${max_failed_attempt} >= ${response.json()}[data][${poller_id}][ping_failed]    there was failed ping between the central and the poller ${poller_id}
     Should Be True    0 < ${response.json()}[data][${poller_id}][ping_ok]    there was no successful ping between the central and the poller ${poller_id}
 
 Setup Two Gorgone Instances
     [Arguments]    ${central_config}=@{EMPTY}    ${poller_config}=@{EMPTY}    ${communication_mode}=push_zmq    ${central_name}=gorgone_central    ${poller_name}=gorgone_poller_2
+    ${start_time}   Get Time    str=epoch
     ${result}    Run    perl /usr/local/bin/gorgone_key_generation.pl
     # generate key if there is none.
     # gorgone can generate it's own key, but as we need the thumbprint in the configuration we need to generate them before launching gorgone.
@@ -136,7 +194,8 @@ Setup Two Gorgone Instances
         Start Gorgone    debug    ${poller_name}
         Wait Until Port Is Bind    5556
         Start Gorgone    debug    ${central_name}
-        
+        # wait until gorgone http server bind the http api port.
+        Wait Until Port Is Bind    8085
         Check Poller Is Connected    port=5556    expected_nb=2
         Check Poller Communicate     2
 
@@ -154,6 +213,8 @@ Setup Two Gorgone Instances
         Start Gorgone    debug    ${central_name}
         Wait Until Port Is Bind    8086
         Start Gorgone    debug    ${poller_name}
+        # wait until gorgone http server bind the http api port.
+        Wait Until Port Is Bind    8085
         Check Poller Is Connected    port=8086    expected_nb=2
         Check Poller Communicate     2
     ELSE IF    '${communication_mode}' == 'pull'
@@ -169,11 +230,17 @@ Setup Two Gorgone Instances
         Start Gorgone    debug    ${central_name}
         Wait Until Port Is Bind    5556
         Start Gorgone    debug    ${poller_name}
-
+        # wait until gorgone http server bind the http api port.
+        Wait Until Port Is Bind    8085
         Check Poller Is Connected    port=5556    expected_nb=2
         Check Poller Communicate     2    max_failed_attempt=1
+    ELSE
+        Fail    Unknown communication mode: ${communication_mode}. Please use one of the following: push_zmq, pullwss, pull.
     END
-
+    ${end_time}   Get Time    str=epoch
+    ${duration}=    Evaluate    ${end_time} - ${start_time}
+    Log To Console    Gorgone started in ${communication_mode} after ${duration} seconds
+    
 Wait Until Port Is Bind
     [Arguments]    ${port}
     FOR    ${i}    IN RANGE    15

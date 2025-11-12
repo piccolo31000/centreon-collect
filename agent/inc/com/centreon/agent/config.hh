@@ -36,7 +36,7 @@ class config {
   unsigned _log_max_file_size;
   unsigned _log_max_files;
 
-  bool _encryption;
+  common::grpc::grpc_config::e_security_mode _security_mode;
   std::string _public_cert_file;
   std::string _private_key_file;
   std::string _ca_certificate_file;
@@ -47,6 +47,7 @@ class config {
   unsigned _max_message_length;
   std::string _token;
 
+  absl::flat_hash_set<std::string> _trusted_tokens;
   static std::unique_ptr<config> _global_conf;
 
  public:
@@ -84,7 +85,12 @@ class config {
   unsigned get_log_max_file_size() const { return _log_max_file_size; }
   unsigned get_log_max_files() const { return _log_max_files; }
 
-  bool use_encryption() const { return _encryption; }
+  common::grpc::grpc_config::e_security_mode get_security_mode() const {
+    return _security_mode;
+  }
+  bool use_encryption() const {
+    return _security_mode != common::grpc::grpc_config::NONE;
+  }
   const std::string& get_public_cert_file() const { return _public_cert_file; }
   const std::string& get_private_key_file() const { return _private_key_file; }
   const std::string& get_ca_certificate_file() const {
@@ -99,6 +105,9 @@ class config {
   unsigned get_max_message_length() const { return _max_message_length; }
 
   const std::string& get_token() const { return _token; }
+  const absl::flat_hash_set<std::string>& get_trusted_tokens() const {
+    return _trusted_tokens;
+  }
 };
 };  // namespace com::centreon::agent
 

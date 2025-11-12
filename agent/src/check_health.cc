@@ -30,10 +30,7 @@ using namespace com::centreon::agent;
  * @param io_context
  * @param logger
  * @param first_start_expected
- * @param check_interval
  * @param serv
- * @param cmd_name
- * @param cmd_line
  * @param args
  * @param cnf
  * @param handler
@@ -41,10 +38,7 @@ using namespace com::centreon::agent;
 check_health::check_health(const std::shared_ptr<asio::io_context>& io_context,
                            const std::shared_ptr<spdlog::logger>& logger,
                            time_point first_start_expected,
-                           duration check_interval,
-                           const std::string& serv,
-                           const std::string& cmd_name,
-                           const std::string& cmd_line,
+                           const Service& serv,
                            const rapidjson::Value& args,
                            const engine_to_agent_request_ptr& cnf,
                            check::completion_handler&& handler,
@@ -52,10 +46,7 @@ check_health::check_health(const std::shared_ptr<asio::io_context>& io_context,
     : check(io_context,
             logger,
             first_start_expected,
-            check_interval,
             serv,
-            cmd_name,
-            cmd_line,
             cnf,
             std::move(handler),
             stat),
@@ -92,15 +83,18 @@ check_health::check_health(const std::shared_ptr<asio::io_context>& io_context,
 /**
  * @brief start a timer to do the job
  *
- * @param timeout unused
+ * @param timeout
  */
-void check_health::start_check([[maybe_unused]] const duration& timeout) {
+void check_health::start_check(const duration& timeout) {
   if (!_start_check(timeout)) {
     return;
   }
 
+  duration wait_beforecompute =
+      std::min(get_raw_start_expected().get_step() / 2,
+               timeout - std::chrono::milliseconds(100));
   // we wait a little in order to have statistics check_interval/2
-  _measure_timer.expires_after(get_raw_start_expected().get_step() / 2);
+  _measure_timer.expires_after(wait_beforecompute);
   _measure_timer.async_wait(
       [me = shared_from_this(), start_check_index = _get_running_check_index()](
           const boost::system::error_code& err) mutable {

@@ -459,7 +459,7 @@ def ctn_config_broker(name: str, poller_inst: int = 1):
             makedirs(f"{VAR_ROOT}/lib/centreon/status/")
         if not exists(f"{VAR_ROOT}/lib/centreon/metrics/tmpl_15552000_300_0.rrd"):
             getoutput(
-                f"rrdcreate {VAR_ROOT}/lib/centreon/metrics/tmpl_15552000_300_0.rrd DS:value:ABSOLUTE:3000:U:U RRA:AVERAGE:0.5:1:864000")
+                f"rrdcreate {VAR_ROOT}/lib/centreon/metrics/tmpl_15552000_300_0.rrd DS:value:ABSOLUTE:3000:U:U RRA:AVERAGE:0.5:300:51841")
         broker_id = 2
         broker_name = "central-rrd-master"
         filename = "central-rrd.json"
@@ -1096,7 +1096,7 @@ def ctn_broker_config_remove_item(name, key):
         f.write(json.dumps(conf, indent=2))
 
 
-def ctn_broker_config_add_lua_output(name, output, luafile):
+def ctn_broker_config_add_lua_output(name, output, luafile, params: dict = {}):
     """
     Add a lua output to the broker configuration.
 
@@ -1119,12 +1119,14 @@ def ctn_broker_config_add_lua_output(name, output, luafile):
     with open(f"{ETC_ROOT}/centreon-broker/{filename}", "r") as f:
         buf = f.read()
     conf = json.loads(buf)
+    lua_conf_content = {"name": output,
+                        "path": luafile,
+                        "type": "lua"}
+    if len(params) != 0:
+        lua_conf_content["lua_parameter"] = params
+    lua_conf = json.load
     output_dict = conf["centreonBroker"]["output"]
-    output_dict.append({
-        "name": output,
-        "path": luafile,
-        "type": "lua"
-    })
+    output_dict.append(lua_conf_content)
     with open(f"{ETC_ROOT}/centreon-broker/{filename}", "w") as f:
         f.write(json.dumps(conf, indent=2))
 
@@ -1455,13 +1457,14 @@ def ctn_check_broker_stats_exist(name, key1, key2, timeout=TIMEOUT):
     return False
 
 
-def ctn_get_broker_stats_size(name, key, timeout=TIMEOUT):
+def ctn_get_broker_stats_size(name: str, key: str, min_expected_value: int, timeout=TIMEOUT):
     """
     Return the number of items under the given key in the stats file.
 
     Args:
         name: The broker instance name among central, rrd and module%d.
         key: The key to work with.
+        min_expected_value: min value expected
         timeout (int, optional): Defaults to TIMEOUT = 30s.
 
     *Example:*
@@ -1469,7 +1472,7 @@ def ctn_get_broker_stats_size(name, key, timeout=TIMEOUT):
     | ${size} | Get Broker Stats Size | central | poller | # 2 |
     """
     limit = time.time() + timeout
-    retval = 0
+    value = 0
     while time.time() < limit:
         if name == 'central':
             filename = "central-broker-master-stats.json"
@@ -1491,12 +1494,10 @@ def ctn_get_broker_stats_size(name, key, timeout=TIMEOUT):
             value = len(conf[key])
         else:
             value = 0
-        if value > retval:
-            retval = value
-        elif retval != 0:
-            return retval
+        if value >= min_expected_value:
+            return value
         time.sleep(5)
-    return retval
+    return value
 
 
 def ctn_get_broker_stats(name: str, expected: str, timeout: int, *keys):
@@ -2130,7 +2131,8 @@ def ctn_get_indexes_to_rebuild(count: int, nb_day=180):
                                 break
                             except Exception as e:
                                 if e.args[0] == 1213:
-                                    logger.console(f"Error inserting data: {e}")
+                                    logger.console(
+                                        f"Error inserting data: {e}")
                                     time.sleep(1)
                                 else:
                                     raise e
@@ -2469,34 +2471,6 @@ def ctn_compare_rrd_status_average_value(index_id, value: int):
         return True
 
 
-def ctn_compare_rrd_average_value_with_grpc(metric, key, value: float):
-    """
-    Compare the average value for an RRD metric with a given value.
-
-    Args:
-        metric: The metric id
-        key: The key to search in the rrd info
-        value: The value to compare with.
-
-    Returns:
-        True if value pointed by key is equal to value param.
-    """
-    res = getoutput(
-        f"rrdtool info {VAR_ROOT}/lib/centreon/metrics/{metric}.rrd"
-    )
-    lst = res.split('\n')
-    if len(lst) >= 2:
-        for line in lst:
-            if key in line:
-                last_update = int(line.split('=')[1])
-                logger.console(f"{key}: {last_update}")
-                return last_update == value * 60
-    else:
-        logger.console(
-            f"It was impossible to get the average value from the file {VAR_ROOT}/lib/centreon/metrics/{metric}.rrd")
-        return False
-
-
 def ctn_check_sql_connections_count_with_grpc(port, count, timeout=TIMEOUT):
     """
     Call the GetSqlManagerStats function by gRPC and checks there are count active connections.
@@ -2764,6 +2738,7 @@ def ctn_get_hosts_services_count(poller_id: int, expected_hst: int, expected_svc
                     return (hosts, services)
         time.sleep(2)
     return (0, 0)
+
 
 def ctn_get_broker_log_level(port, log, timeout=TIMEOUT):
     """

@@ -75,10 +75,11 @@ import_robot_resources()
 
 
 class EngineInstance:
-    def __init__(self, count: int, hosts: int = 50, srv_by_host: int = 20):
+    def __init__(self, count: int, hosts: int = 50, srv_by_host: int = 20, sh_command: bool = False):
         self.last_service_id = 0
         self.hosts = []
         self.services = []
+        self.service_by_host = srv_by_host
         self.last_host_id = 0
         self.last_host_group_id = 0
         self.commands_count = 50
@@ -86,7 +87,7 @@ class EngineInstance:
         self.host_cmd = {}
         self.service_cmd = {}
         self.anomaly_detection_internal_id = 1
-        self.build_configs(hosts, srv_by_host)
+        self.build_configs(hosts, srv_by_host, 0, sh_command)
         makedirs(ETC_ROOT, mode=0o777, exist_ok=True)
         makedirs(VAR_ROOT, mode=0o777, exist_ok=True)
         makedirs(CONF_DIR, mode=0o777, exist_ok=True)
@@ -224,7 +225,7 @@ class EngineInstance:
             "hid": hid}
         return retval
 
-    def _create_service(self, host_id: int, cmd_ids: int):
+    def _create_service(self, host_id: int, cmd_ids):
         self.last_service_id += 1
         service_id = self.last_service_id
         command_id = random.randint(cmd_ids[0], cmd_ids[1])
@@ -246,6 +247,38 @@ class EngineInstance:
 }}
 """.format(
             host_id, service_id, self.service_cmd[service_id])
+        return retval
+
+    def _create_service_with_sh_command(self, host_id: int, service_index_in_host: int):
+        """
+            Create a service that uses command_{host_id}_{service_index_in_host}
+            if service_id is a multiple of 10, we set _KO macro and check.sh will return 1
+        """
+        self.last_service_id += 1
+        service_id = self.last_service_id
+        cmd = f"command_{host_id}_{service_index_in_host}"
+        self.service_cmd[service_id] = cmd
+
+        retval = f"""define service {{
+    host_name                       host_{host_id}
+    service_description             service_{service_id}
+    _SERVICE_ID                     {service_id}
+    check_command                   {cmd}
+    check_period                    24x7
+    max_check_attempts              3
+    check_interval                  1
+    retry_interval                  1
+    register                        1
+    active_checks_enabled           1
+    passive_checks_enabled          1
+    _VAR1                           VAL_SERV_{host_id}_{service_id}
+    _VAR2                           VAL_HOST_{host_id}
+"""
+        # for all service_id multiple of 10, check.sh exit with 1
+        if service_id % 10 == 0:
+            retval += "    _KO                             KO\n"
+
+        retval += "}\n"
         return retval
 
     def ctn_create_anomaly_detection(self, host_id: int, dependent_service_id: int, metric_name: string, sensitivity: float = 0.0):
@@ -395,6 +428,14 @@ define command {{
         return retval
 
     @staticmethod
+    def create_sh_command(host_id: int, service_id: int):
+        return f"""define command {{
+    command_name                    command_{host_id}_{service_id}
+    command_line                    {ENGINE_HOME}/check.sh {host_id} {service_id}
+}}
+"""
+
+    @staticmethod
     def create_host_group(id, mbs):
         retval = """define hostgroup {{
     hostgroup_id                    {0}
@@ -448,19 +489,25 @@ define command {{
             ff.write(content)
 
     @staticmethod
-    def create_escalations_file(poller: int, name: int, SG: str, contactgroup: str, type: str):
+    def create_escalations_file(poller: int, name: int, SG: str, contactgroup: str, type: str, create_default_values: bool):
         config_file = f"{CONF_DIR}/config{poller}/escalations.cfg"
         with open(config_file, "a+") as ff:
-            content = f"""define {type}escalation {{
+            if create_default_values:
+                content = f"""define {type}escalation {{
     ;escalation_name                esc{name}
     escalation_period              24x7
     escalation_options             """
-            if type == "service":
-                content += "w,c,r\nservicegroup_name"
-            else:
-                content += "all\nhostgroup_name"
-            content += f"""              {SG}
+                if type == "service":
+                    content += "w,c,r\nservicegroup_name"
+                else:
+                    content += "all\nhostgroup_name"
+                content += f"""              {SG}
     contact_groups                 {contactgroup}
+    }}
+    """
+            else:
+                content = f"""define {type}escalation {{
+    ;escalation_name                esc{name}
     }}
     """
             ff.write(content)
@@ -532,14 +579,18 @@ define command {{
             ff.write(content)
 
     @staticmethod
-    def create_template_file(poller: int, typ: str, what: str, ids):
+    def create_template_file(poller: int, typ: str, what: str, ids, first_template_index: int):
         if typ == "hostescalation" or typ == "serviceescalation":
             config_file = f"{CONF_DIR}/config{poller}/escalationTemplates.cfg"
         else:
             config_file = f"{CONF_DIR}/config{poller}/{typ}Templates.cfg"
-        with open(config_file, "w+") as ff:
+        if first_template_index <= 1:
+            file_open_option = "w+"
+        else:
+            file_open_option = "a+"
+        with open(config_file, file_open_option) as ff:
             content = ""
-            idx = 1
+            idx = first_template_index
             for i in ids:
                 content += f"""define {typ} {{
 name                   {typ}_template_{idx}
@@ -576,7 +627,7 @@ passive_checks_enabled 1
 """
             ff.write(content)
 
-    def build_configs(self, hosts: int, services_by_host: int, debug_level=0):
+    def build_configs(self, hosts: int, services_by_host: int, debug_level=0, sh_command: bool = False):
         if exists(CONF_DIR):
             shutil.rmtree(CONF_DIR)
         r = 0
@@ -604,13 +655,23 @@ passive_checks_enabled 1
                         f.write(h["config"])
                         self.hosts.append("host_{}".format(h["hid"]))
                         for j in range(1, services_by_host + 1):
-                            ff.write(self._create_service(h["hid"],
-                                                          (inst * self.commands_count + 1, (inst + 1) * self.commands_count)))
+                            if (sh_command):
+                                ff.write(
+                                    self._create_service_with_sh_command(h["hid"], j))
+                            else:
+                                ff.write(self._create_service(h["hid"],
+                                                              (inst * self.commands_count + 1, (inst + 1) * self.commands_count)))
                             self.services.append("service_{}".format(h["hid"]))
 
             with open(f"{config_dir}/commands.cfg", "w") as f:
-                for i in range(inst * self.commands_count + 1, (inst + 1) * self.commands_count + 1):
-                    f.write(self.create_command(i))
+                if (sh_command):
+                    for host_id in range(1, nb_hosts + 1):
+                        for service_id in range(1, services_by_host + 1):
+                            f.write(self.create_sh_command(
+                                host_id, service_id))
+                else:
+                    for i in range(inst * self.commands_count + 1, (inst + 1) * self.commands_count + 1):
+                        f.write(self.create_command(i))
                 for i in range(self.last_host_id):
                     f.write("""define command {{
     command_name                    checkh{1}
@@ -766,12 +827,13 @@ define contact {
 
             if not exists(ENGINE_HOME):
                 makedirs(ENGINE_HOME)
-            for file in ["check.pl", "notif.pl", "check_centreon_bam"]:
+            for file in ["check.pl", "check.sh", "notif.pl", "check_centreon_bam"]:
                 shutil.copyfile(f"{SCRIPT_DIR}/{file}",
                                 f"{ENGINE_HOME}/{file}")
                 chmod(f"{ENGINE_HOME}/{file}", stat.S_IRWXU |
                       stat.S_IRGRP | stat.S_IXGRP)
-            shutil.copyfile(dirname(__file__) + "/db_variables.resource", "/tmp/db_variables.resource")
+            shutil.copyfile(
+                dirname(__file__) + "/db_variables.resource", "/tmp/db_variables.resource")
             if not exists(f"{ENGINE_HOME}/config{inst}/rw"):
                 makedirs(f"{ENGINE_HOME}/config{inst}/rw")
 
@@ -802,7 +864,7 @@ define contact {
 engine = None
 
 
-def ctn_config_engine(num: int, hosts: int = 50, srv_by_host: int = 20):
+def ctn_config_engine(num: int, hosts: int = 50, srv_by_host: int = 20, sh_command: bool = False):
     """
     Configure all the necessary files for num instances of centengine.
 
@@ -810,9 +872,10 @@ def ctn_config_engine(num: int, hosts: int = 50, srv_by_host: int = 20):
         num (int): How many engine configurations to start
         hosts (int, optional): Defaults to 50.
         srv_by_host (int, optional): Defaults to 20.
+        sh_command: if True, services will use check.sh instead of check.pl, services will have some extra macros
     """
     global engine
-    engine = EngineInstance(num, hosts, srv_by_host)
+    engine = EngineInstance(num, hosts, srv_by_host, sh_command)
 
 
 def ctn_get_engines_count():
@@ -1164,14 +1227,23 @@ def ctn_engine_config_set_value_in_contacts(idx: int, desc: str, key: str, value
     with open(filename, "r") as f:
         lines = f.readlines()
     if file == "contactTemplates.cfg":
-        r = re.compile(rf"^\s*name\s+{desc}\s*$")
+        r_name = re.compile(rf"^\s*name\s+{desc}\s*$")
     else:
-        r = re.compile(rf"^\s*contact_name\s+{desc}\s*$")
+        r_name = re.compile(rf"^\s*contact_name\s+{desc}\s*$")
 
-    for i in range(len(lines)):
-        if r.match(lines[i]):
-            lines.insert(i + 1, f"    {key}              {value}\n")
-            break
+    r_key = re.compile(rf"^\s*{key}\s+[\w\.,]+\s*$")
+    in_block = False
+    for i, line in enumerate(lines):
+        if not in_block:
+            if r_name.match(line):
+                in_block = True
+        else:
+            if r_key.match(line):
+                lines[i] = f"    {key}                     {value}\n"
+                break
+            elif line.strip() == "}":
+                lines.insert(i, f"    {key}                     {value}\n")
+                break
 
     with open(filename, "w") as f:
         f.writelines(lines)
@@ -1256,6 +1328,27 @@ def ctn_engine_config_set_key_value_in_cfg(idx: int, desc: str, key: str, value:
     if not found:
         logger.console(
             f'\n\033[91mFailed : Cannot add the line  {key} : {value} to {desc} in {file}\033[0m')
+
+    with open(filename, "w") as f:
+        f.writelines(lines)
+
+
+def ctn_engine_config_delete_key(idx: int, key: str):
+    """
+    Delete a parameter in the centengine.cfg for the Engine configuration idx.
+
+    Args:
+        idx (int): Index of the Engine configuration (from 0)
+        key (str): The parameter that will be deleted.
+    """
+    filename = f"{ETC_ROOT}/centreon-engine/config{idx}/centengine.cfg"
+    with open(filename, "r") as f:
+        lines = f.readlines()
+
+    for i in range(len(lines)):
+        if lines[i].startswith(key + "="):
+            del lines[i]
+            break
 
     with open(filename, "w") as f:
         f.writelines(lines)
@@ -2546,7 +2639,7 @@ def ctn_schedule_host_fixed_downtime(poller: int, hst: str, duration: int):
         f.write(cmd2)
 
 
-def ctn_schedule_host_downtime(poller: int, hst: str, duration: int):
+def ctn_schedule_host_downtime(poller: int, hst: str, duration: int, author: str = "admin", comment: str = "Downtime set by admin"):
     """
     Schedule a downtime on a host.
 
@@ -2556,10 +2649,9 @@ def ctn_schedule_host_downtime(poller: int, hst: str, duration: int):
         duration (int): Expected duration of the downtime in seconds.
     """
     now = int(time.time())
-    cmd1 = "[{1}] SCHEDULE_HOST_DOWNTIME;{0};{1};{2};1;0;{3};admin;Downtime set by admin\n".format(
-        hst, now, now + duration, duration)
-    cmd2 = "[{1}] SCHEDULE_HOST_SVC_DOWNTIME;{0};{1};{2};1;0;{3};admin;Downtime set by admin\n".format(
-        hst, now, now + duration, duration)
+    end = now + duration
+    cmd1 = f"[{now}] SCHEDULE_HOST_DOWNTIME;{hst};{now};{end};1;0;{duration};{author};{comment}\n"
+    cmd2 = f"[{now}] SCHEDULE_HOST_SVC_DOWNTIME;{hst};{now};{end};1;0;{duration};{author};{comment}\n"
     with open(
             f"{VAR_ROOT}/lib/centreon-engine/config{poller}/rw/centengine.cmd", "w") as f:
         f.write(cmd1)
@@ -2638,7 +2730,7 @@ def ctn_create_severities_file(poller: int, nb: int, offset: int = 1):
     engine.create_severities(poller, nb, offset)
 
 
-def ctn_create_escalations_file(poller: int, name: int, SG: str, contactgroup: str, type: str = "service"):
+def ctn_create_escalations_file(poller: int, name: int, SG: str, contactgroup: str, type: str = "service", create_default_values: bool = True):
     """
     Create an escalations.cfg file for a given poller.
 
@@ -2647,8 +2739,10 @@ def ctn_create_escalations_file(poller: int, name: int, SG: str, contactgroup: s
         name (int): name of escalations (not used).
         SG (str): name of a service group.
         contactgroup (str): name of a contact group.
+        create_default_values: True if you want to fill escalation
     """
-    engine.create_escalations_file(poller, name, SG, contactgroup, type)
+    engine.create_escalations_file(
+        poller, name, SG, contactgroup, type, create_default_values)
 
 
 def ctn_create_dependencies_file(poller: int, dependenthost: str, host: str, dependentservice: str, service: str):
@@ -2703,7 +2797,7 @@ def ctn_create_dependencieshstgrp_file(poller: int, dependenthostgrp: str, hostg
     engine.create_dependencieshstgrp_file(poller, dependenthostgrp, hostgrp)
 
 
-def ctn_create_template_file(poller: int, typ: str, what: str, ids: list):
+def ctn_create_template_file(poller: int, typ: str, what: str, ids: list, first_template_index: int = 1):
     """
     Create a template file of the form "{typ}Templates.cfg". This should be as
     generic as possible. In fact, not so generic...
@@ -2713,8 +2807,9 @@ def ctn_create_template_file(poller: int, typ: str, what: str, ids: list):
         typ (str): service, host, ...
         what (str): A string. It depends on what type of template.
         ids (list): For each integer in this list, a template is defined.
+        first_template_index (int): index of the first created template (example host_template_<first_template_index>)
     """
-    engine.create_template_file(poller, typ, what, ids)
+    engine.create_template_file(poller, typ, what, ids, first_template_index)
 
 
 def ctn_create_tags_file(poller: int, nb: int, offset: int = 1, tag_type: str = ""):
@@ -2857,7 +2952,8 @@ def ctn_set_check_command(poller: int, cmd: str, check_cmd: str):
                 break
             m = r_end.match(line)
             if m:
-                lines.insert(i, f"    command_line                    {check_cmd}\n")
+                lines.insert(
+                    i, f"    command_line                    {check_cmd}\n")
                 break
 
     with open(f"{CONF_DIR}/config{poller}/commands.cfg", "w") as f:
@@ -3852,7 +3948,7 @@ define timeperiod {{
 """)
 
 
-def ctn_add_otl_server_module(idx: int, otl_server_config_json_content: str):
+def ctn_add_otl_server_module(idx: int, otl_server_config_json_content: str, with_default_token: bool = True):
     """!
     add a new broker_module line to centengine.cfg and create otl_server config file
     @param idx index ofthe poller usually 0
@@ -3865,13 +3961,24 @@ def ctn_add_otl_server_module(idx: int, otl_server_config_json_content: str):
 
     with open(filename, "a+") as f:
         f.write(
-            f"broker_module=/usr/lib64/centreon-engine/libopentelemetry.so {otl_server_config_path}")
+            f"broker_module=/usr/lib64/centreon-engine/libopentelemetry.so {otl_server_config_path}\n")
+
+    json_load = json.loads(otl_server_config_json_content)
+
+    add_token_otel = False
+    if "otel_server" in json_load:
+        add_token_otel = True
+
+    if "centreon_agent" in json_load:
+        if "reverse_connections" in json_load["centreon_agent"]:
+            for obj in json_load["centreon_agent"]["reverse_connections"]:
+                if "encryption" in obj and obj["encryption"] == "full":
+                    obj["token"] = token
 
     with open(otl_server_config_path, "w") as f:
-        pretty_json = json.dumps(json.loads(
-            otl_server_config_json_content), indent=4)
+        pretty_json = json.dumps(json_load, indent=4)
         f.write(pretty_json)
-    if "\"encryption\": true" in otl_server_config_json_content:
+    if add_token_otel and with_default_token:
         # add token to otl_server.json
         ctn_add_token_otl_server_module(idx, token)
 
@@ -3895,20 +4002,21 @@ def ctn_add_token_otl_server_module(idx: int, token: str):
         data = json.load(f)
 
     # Check if "trusted_tokens" already exists
-    if "otel_server" in data:
-        if "trusted_tokens" in data["otel_server"]:
-            if token not in data["otel_server"]["trusted_tokens"]:
-                data["otel_server"]["trusted_tokens"].append(token)
-                token_inserted = True
-        else:
-            # Insert trusted_tokens after otel_server
-            new_data = {}
-            for key, value in data.items():
-                new_data[key] = value
-                if key == "otel_server":
-                    new_data[key]["trusted_tokens"] = [token]
+    if "otel_server" in data and "encryption" in data["otel_server"]:
+        if data["otel_server"]["encryption"] == "full":
+            if "trusted_tokens" in data["otel_server"]:
+                if token not in data["otel_server"]["trusted_tokens"]:
+                    data["otel_server"]["trusted_tokens"].append(token)
                     token_inserted = True
-            data = new_data
+            else:
+                # Insert trusted_tokens after otel_server
+                new_data = {}
+                for key, value in data.items():
+                    new_data[key] = value
+                    if key == "otel_server":
+                        new_data[key]["trusted_tokens"] = [token]
+                        token_inserted = True
+                data = new_data
 
     with open(otl_server_config_path, "w") as f:
         json.dump(data, f, indent=4)
@@ -3944,6 +4052,35 @@ def ctn_del_token_otl_server_module(idx: int, token: str):
     with open(otl_server_config_path, "w") as f:
         json.dump(data, f, indent=4)
 
+
+def ctn_add_token_agent_otl_server(idx_config: int, idx_agent: int, token: str):
+    """
+    Add a token in the otl_server.json configuration file.to the fields token
+    Args:
+        idx (int): The index of the configuration directory (e.g., config1, config2, etc.).
+        token (str): The token to be added to the "trusted_tokens" list.
+    Returns:
+        bool: True if the token was successfully inserted, False otherwise.
+    """
+
+    otl_server_config_path = f"{ETC_ROOT}/centreon-engine/config{idx_config}/otl_server.json"
+    token_inserted = False
+
+    if not exists(otl_server_config_path):
+        return
+
+    with open(otl_server_config_path, "r") as f:
+        data = json.load(f)
+
+    # Check if "trusted_tokens" already exists
+    if "centreon_agent" in data:
+        if "reverse_connections" in data["centreon_agent"]:
+            data["centreon_agent"]["reverse_connections"][idx_agent]["token"] = token
+
+    with open(otl_server_config_path, "w") as f:
+        json.dump(data, f, indent=4)
+
+    return token_inserted
 
 
 def ctn_randomword(length):
@@ -4552,3 +4689,106 @@ def ctn_engine_command_remove_connector(idx: int, command_name: str):
 
     with open(f"{ETC_ROOT}/centreon-engine/config{idx}/commands.cfg", "w") as f:
         f.writelines(lines)
+
+
+def ctn_engine_check_sh_command_output():
+    """
+    Scan the engine log and search service::handle_async_check_result lines
+    Check the output of check.sh witch return arguments and NAGIOS__SERVICEVAR1 and NAGIOS__SERVICEVAR2 
+    environment variables
+    services with an id multiple of 10 have de _KO macro set, so check.sh returns 1 instead of 0
+
+    Returns: number of different services checked
+    """
+
+    if not engine:
+        return 0
+    search_pattern = re.compile(
+        r"service::handle_async_check_result\(\) service service_(\d+) res:service_check start_time=(\d+) finish_time=(\d+) timeout=(\d+) ok=(\d+) ret_code=(\d+) output:args (\d+) (\d+) env VAL_SERV_(\d+)_(\d+) VAL_HOST_(\d+)")
+    service_checked = {}
+    with open(f"{VAR_ROOT}/log/centreon-engine/config0/centengine.log") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        m = search_pattern.search(line)
+        if m is not None:
+            service_id = int(m.group(1))
+            start_time = m.group(2)
+            finish_time = m.group(3)
+            timeout = m.group(4)
+            ok = m.group(5)
+            ret_code = m.group(6)
+            host_id = int(m.group(7))
+            service_host_index = int(m.group(8))
+            env_host_id = int(m.group(9))
+            env_service_id = int(m.group(10))
+            env_host_id_2 = int(m.group(11))
+            if int(finish_time) - int(start_time) > 5:
+                logger.console(f"check duration too long: {line}")
+                return 0
+            if timeout != '0':
+                logger.console(f"check timeout: {line}")
+                return 0
+            if ok != '1':
+                logger.console(f"check nok: {line}")
+                return 0
+            # for all service_id multiple of 10, check.sh exit with 1
+            if service_id % 10 != 0:
+                if ret_code != '0':
+                    logger.console(f"check ret_code no OK: {line}")
+                    return 0
+            else:
+                if ret_code != '1':
+                    logger.console(f"check ret_code no CRITICAL: {line}")
+                    return 0
+            if (host_id - 1)*engine.service_by_host + service_host_index != service_id:
+                logger.console(f"bad service id:{line}")
+                return 0
+            if host_id != env_host_id:
+                logger.console(f"bad env host id:{line}")
+                return 0
+            if service_id != env_service_id:
+                logger.console(f"bad env service id:{line}")
+                return 0
+            if host_id != env_host_id_2:
+                logger.console(f"bad env val_host id:{line}")
+                return 0
+            service_checked[service_id] = 1
+    return len(service_checked)
+
+
+def ctn_engine_check_command_output():
+    """
+    Scan the engine log and search service::handle_async_check_result lines
+    Check the output of check.pl that returns Test check <id> | metric=53.00;50.00;66.67
+    /tmp/states must be filled with 0 exit satus
+
+    Returns: number of different services checked
+    """
+
+    if not engine:
+        return 0
+    search_pattern = re.compile(
+        r"service::handle_async_check_result\(\) service service_(\d+) res:service_check start_time=(\d+) finish_time=(\d+) timeout=(\d+) ok=(\d+) ret_code=(\d+) output:Test check (\d+)")
+    service_checked = {}
+    with open(f"{VAR_ROOT}/log/centreon-engine/config0/centengine.log") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        m = search_pattern.search(line)
+        if m is not None:
+            service_id = int(m.group(1))
+            timeout = m.group(4)
+            ok = m.group(5)
+            ret_code = m.group(6)
+            if timeout != '0':
+                logger.console(f"check timeout: {line}")
+                return 0
+            if ok != '1':
+                logger.console(f"check nok: {line}")
+                return 0
+            if ret_code != '0':
+                logger.console(f"check ret_code no OK: {line}")
+                return 0
+            service_checked[service_id] = 1
+    return len(service_checked)

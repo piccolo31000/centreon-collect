@@ -9,6 +9,11 @@ database_type=$2
 #this env variable is a json that contains some test params
 export TESTS_PARAMS='$3'
 
+if [ -f "/.venv/bin/activate" ]; then
+  echo "########################### activate python virtual env ###########################"
+  source /.venv/bin/activate
+fi
+
 . /etc/os-release
 distrib=${ID}
 distrib=$(echo $distrib | tr '[:lower:]' '[:upper:]')
@@ -36,7 +41,7 @@ fi
 
 if [ $database_type == 'mysql' ]; then
     echo "########################### Start MySQL ######################################"
-    /usr/libexec/mysqldtoto --user=root &
+    /usr/sbin/mysqldtoto --user=root &
 else
     echo "########################### Start MariaDB ######################################"
     if [ "$distrib" = "ALMALINUX" ]; then

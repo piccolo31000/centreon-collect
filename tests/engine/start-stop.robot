@@ -80,6 +80,59 @@ ESSCTOWC
     Ctn Config Broker    module
     Repeat Keyword    4 times    Ctn Start Stop Instances    20s
 
+ESS_STATS
+    [Documentation]    Scenario: Reading the stats file after Engine has started
+    ...    Given the Engine is started
+    ...    When we read the Engine's stats file
+    ...    Then Engine must not crash
+    [Tags]    engine    MON-171621
+    Ctn Config Engine    ${1}    ${2}    ${2}
+    Ctn Config Broker    module
+    Ctn Config BBDO3    1    only_engine=True
+    Ctn Clear Retention
+    ${start}    Get Current Date
+    Ctn Clear Retention
+    Ctn Start Engine
+    Ctn Wait For Engine To Be Ready    ${start}    ${1}
+    Wait Until Created    /tmp/var/lib/centreon-engine/central-module-master-stats.json
+    ${result}    Grep File    /tmp/var/lib/centreon-engine/central-module-master-stats.json    "name":"/usr/share/centreon/lib/centreon-broker/15-stats.so"
+    Ctn Stop Engine
+
+ESSOCWNV
+    [Documentation]    Scenario: Engine is started with a valid old configuration (concerning cbmod)
+    ...    Given the Engine is configured with a valid old configuration
+    ...    When the Engine is started
+    ...    Then the Engine starts correctly
+    ...    And the Engine stops correctly
+    [Tags]    engine    start-stop    MON-173354
+    Ctn Config Engine    ${1}
+    Ctn Engine Config Set Value    ${0}    broker_module    /usr/lib64/nagios/plugins/centreon-broker/cbmod.so ${ETC_ROOT}/centreon-broker/central-module0.json    True    True
+    Ctn Engine Config Delete Key    ${0}    broker_module_cfg_file
+    ${start}    Ctn Get Round Current Date
+    Ctn Start Engine
+    ${content}    Create List    is deprecated and will be removed in future versions.
+    ${result}    Ctn Find In Log With Timeout    ${engineLog0}    ${start}    ${content}    ${60}
+    Should Be True    ${result}    The engine should log the deprecation message but also use its value
+
+    ${content}    Create List    Parsing the configuration file '/tmp/etc/centreon-broker/central-module0.json' of the 'cbmod' module to still be able to use it.
+    ${result}    Ctn Find In Log With Timeout    ${VAR_ROOT}/log/centreon-engine/config0/centengine-stdout.log    ${start}    ${content}    ${60}
+    Should Be True    ${result}    The engine should log the use of the old cbmod configuration.
+    Sleep    10s
+    Ctn Stop Engine
+
+NO_BROKER_LOG
+    [Documentation]    Given a configuration without broker logs directory, engine must start correctly
+    [Tags]    engine    start-stop    MON-187627
+    Ctn Config Engine    ${1}
+    Ctn Config Broker    module
+    Remove Directory     ${BROKER_LOG}     recursive=${True}
+
+    ${start}    Ctn Get Round Current Date
+    Ctn Start Engine
+
+    Ctn Wait For Engine To Be Ready    ${start}    ${1}
+
+    Ctn Stop Engine
 
 *** Keywords ***
 Ctn Start Stop Instances

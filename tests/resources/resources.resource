@@ -28,15 +28,19 @@ ${agentlog}       ${VarRoot}/log/centreon-engine/centreon-agent.log
 
 *** Keywords ***
 Ctn Config BBDO3
-    [Arguments]    ${nbEngine}    ${version}=3.0.1    ${only_central}=False
-    Ctn Config Broker Sql Output    central    unified_sql
-    IF    not ${only_central}
+    [Arguments]    ${nbEngine}    ${version}=3.0.1    ${only_central}=False    ${only_engine}=False
+    IF    not ${only_central} and not ${only_engine}
         Ctn Broker Config Add Item    rrd    bbdo_version    ${version}
     END
-    Ctn Broker Config Add Item    central    bbdo_version    ${version}
-    FOR    ${i}    IN RANGE    ${nbEngine}
-        ${mod}    Catenate    SEPARATOR=    module    ${i}
-        Ctn Broker Config Add Item    ${mod}    bbdo_version    ${version}
+    IF    not ${only_engine}
+	Ctn Config Broker Sql Output    central    unified_sql
+        Ctn Broker Config Add Item    central    bbdo_version    ${version}
+    END
+    IF    not ${only_central}
+        FOR    ${i}    IN RANGE    ${nbEngine}
+            ${mod}    Catenate    SEPARATOR=    module    ${i}
+            Ctn Broker Config Add Item    ${mod}    bbdo_version    ${version}
+        END
     END
     # We replace the global Bbdo2 Variable to False
     Ctn Set Bbdo2    ${False}
@@ -191,7 +195,7 @@ Ctn Stop Processes
     Ctn Kill Engine
 
 Ctn Start Engine
-    [Arguments]    ${newGeneration}=False
+    [Arguments]    ${newGeneration}=False     ${with_centreon_engine_user}=False
     # Currently we are in BBDO2 by default.
     ${count}    Ctn Get Engines Count
     FOR    ${idx}    IN RANGE    0    ${count}
@@ -206,10 +210,13 @@ Ctn Start Engine
         EXCEPT
             Log    can't remove ${lib}/rw/centengine.cmd don't worry
         END
+        IF    ${with_centreon_engine_user}
+            Run    chown -R centreon-engine: /tmp/etc/centreon-engine /tmp/etc/centreon-broker /tmp/var
+        END
         IF    ${newGeneration}
-            Start Process    /usr/sbin/centengine    -p    ${VarRoot}/lib/centreon-engine/config${idx}/current-conf.prot    -b    ${EtcRoot}/centreon-broker/central-module${idx}.json    ${conf}    alias=${alias}    stdout=${log}/centengine-stdout.log    stderr=${log}/centengine-stderr.log
+            Start Process    /usr/sbin/centengine    -p    ${VarRoot}/lib/centreon-engine/config${idx}/current-conf.prot    ${conf}    alias=${alias}    stdout=${log}/centengine-stdout.log    stderr=${log}/centengine-stderr.log
         ELSE
-            Start Process    /usr/sbin/centengine    -b    ${EtcRoot}/centreon-broker/central-module${idx}.json    ${conf}    alias=${alias}    stdout=${log}/centengine-stdout.log    stderr=${log}/centengine-stderr.log
+            Start Process    /usr/sbin/centengine    ${conf}    alias=${alias}    stdout=${log}/centengine-stdout.log    stderr=${log}/centengine-stderr.log
         END
     END
 
@@ -242,7 +249,6 @@ Ctn Restart Engine
 Ctn Start Custom Engine
     [Arguments]    ${broker_conf}    ${conf_path}    ${process_alias}
     Start Process    /usr/sbin/centengine
-    ...    -b    ${broker_conf}
     ...    ${conf_path}
     ...    alias=${process_alias}
 
@@ -435,6 +441,7 @@ Ctn Clear Metrics
     Execute SQL String    DELETE FROM index_data
     Execute SQL String    DELETE FROM data_bin
     Disconnect From Database
+    Remove Files     ${VarRoot}/lib/centreon/metrics/*
 
 Ctn Dump Ba On Error
     [Arguments]    ${result}    ${ba_id}

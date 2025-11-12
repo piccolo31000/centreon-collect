@@ -16,11 +16,16 @@
 # For more information : contact@centreon.com
 #
 
+include_directories(
+  ${CMAKE_SOURCE_DIR}/common/inc
+      )
+
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
   add_executable(
     ut_common
     absl_flyweight_factory_test.cc
     crypto/base64.cc
+    crypto/aes256.cc
     engine_conf/expand_conf.cc
     file_test.cc
     jwt_test.cc
@@ -35,7 +40,8 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     utf8_test.cc
     ${TESTS_SOURCES})
 else()
-  add_executable(ut_common
+  add_executable(
+    ut_common
     absl_flyweight_factory_test.cc
     perfdata_test.cc
     process_test.cc
@@ -45,12 +51,11 @@ else()
     ${TESTS_SOURCES})
 endif()
 
-set(TESTS_DIR "${PROJECT_SOURCE_DIR}/tests")                   
+set(TESTS_DIR "${PROJECT_SOURCE_DIR}/tests")
 
 target_compile_definitions(
   ut_common PUBLIC -DHTTP_TEST_DIR="${PROJECT_SOURCE_DIR}/http/test"
-  -DCOMMON_CFG_TEST=\"${TESTS_DIR}/cfg_files\"
-  )
+                   -DCOMMON_CFG_TEST=\"${TESTS_DIR}/cfg_files\")
 
 set_target_properties(
   ut_common
@@ -69,7 +74,15 @@ endif()
 
 file(COPY ${PROJECT_SOURCE_DIR}/tests/scripts/echo.bat
      DESTINATION ${CMAKE_BINARY_DIR}/tests)
+file(COPY ${PROJECT_SOURCE_DIR}/tests/scripts/echo_env1_env2.bat
+     DESTINATION ${CMAKE_BINARY_DIR}/tests)
 file(COPY ${PROJECT_SOURCE_DIR}/tests/scripts/bad_script.bat
+     DESTINATION ${CMAKE_BINARY_DIR}/tests)
+file(COPY ${PROJECT_SOURCE_DIR}/tests/scripts/echo_env1_env2.sh
+     DESTINATION ${CMAKE_BINARY_DIR}/tests)
+file(COPY ${PROJECT_SOURCE_DIR}/tests/scripts/echo_multilines.bat
+     DESTINATION ${CMAKE_BINARY_DIR}/tests)
+file(COPY ${PROJECT_SOURCE_DIR}/tests/scripts/echo_multilines.sh
      DESTINATION ${CMAKE_BINARY_DIR}/tests)
 
 add_test(NAME tests COMMAND ut_common)
@@ -78,12 +91,14 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
   target_link_libraries(
     ut_common
     PRIVATE centreon_common
+            process_stat
             ctncrypto
             centreon_http
             centreon_process
-	    engine_conf
-            -L${Boost_LIBRARY_DIR_RELEASE}
-            boost_program_options
+            ctncrypto
+            protobuf::libprotobuf
+            engine_conf
+            Boost::program_options
             re2::re2
             log_v2
             OpenSSL::SSL
@@ -99,14 +114,18 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
             fmt::fmt
             pthread)
 
-  add_dependencies(ut_common centreon_common centreon_http)
+  add_dependencies(ut_common centreon_common process_stat ctncrypto
+                   centreon_http)
 
 else()
   target_link_libraries(
     ut_common
     PRIVATE centreon_common
             centreon_process
+            ctncrypto
             Boost::program_options
+            Boost::process
+            gRPC::grpc++
             re2::re2
             GTest::gtest
             GTest::gtest_main
@@ -118,7 +137,7 @@ else()
             absl::bits
             fmt::fmt)
 
-  add_dependencies(ut_common centreon_common)
+  add_dependencies(ut_common centreon_common ctncrypto)
 
 endif()
 

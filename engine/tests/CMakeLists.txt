@@ -37,14 +37,11 @@ if(WITH_TESTING)
 
   target_link_libraries(
     rpc_client_engine
-    -L${PROTOBUF_LIB_DIR}
-    cerpc
+    PRIVATE cerpc
     centreon_common
+    process_stat
     spdlog::spdlog
-    gRPC::gpr
-    gRPC::grpc
     gRPC::grpc++
-    gRPC::grpc++_alts
     crypto
     ssl
     z
@@ -126,11 +123,14 @@ if(WITH_TESTING)
       ${TESTS_DIR}/notifications/service_timeperiod_notification.cc
       ${TESTS_DIR}/notifications/service_flapping_notification.cc
       ${TESTS_DIR}/notifications/service_downtime_notification_test.cc
+      ${TESTS_DIR}/opentelemetry/agent_check_result_builder_test.cc
+      ${TESTS_DIR}/opentelemetry/agent_reverse_client_test.cc
       ${TESTS_DIR}/opentelemetry/grpc_config_test.cc
       ${TESTS_DIR}/opentelemetry/host_serv_extractor_test.cc
-      ${TESTS_DIR}/opentelemetry/otl_server_test.cc
-      ${TESTS_DIR}/opentelemetry/otl_converter_test.cc
       ${TESTS_DIR}/opentelemetry/open_telemetry_test.cc
+      ${TESTS_DIR}/opentelemetry/otl_converter_test.cc
+      ${TESTS_DIR}/opentelemetry/otl_server_test.cc
+      ${TESTS_DIR}/opentelemetry/pb_agent_to_engine_test.cc
       ${TESTS_DIR}/retention/host.cc
       ${TESTS_DIR}/retention/service.cc
       ${TESTS_DIR}/string/string.cc
@@ -179,32 +179,27 @@ if(WITH_TESTING)
 
   target_link_libraries(
     ut_engine
-    PRIVATE -L${PROTOBUF_LIB_DIR}
-            enginerpc
+    PRIVATE enginerpc
             ut_engine_utils
-            "-Wl,-whole-archive"
+            -Wl,-whole-archive
             cce_core
             log_v2
             opentelemetry
             centagent_lib
-            "-Wl,-no-whole-archive"
+            -Wl,-no-whole-archive
             pb_open_telemetry_lib
             centreon_grpc
             centreon_http
             centreon_process
-            -L${Boost_LIBRARY_DIR_RELEASE}
-            boost_url
-            boost_program_options
+	    #Boost::url
+	    Boost::program_options
             pthread
             ${GCOV}
             GTest::gtest
             GTest::gtest_main
             GTest::gmock
             GTest::gmock_main
-            gRPC::gpr
-            gRPC::grpc
             gRPC::grpc++
-            gRPC::grpc++_alts
             crypto
             ssl
             z

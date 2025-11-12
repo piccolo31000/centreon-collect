@@ -338,14 +338,14 @@ static int handle_contact_macro(nagios_macros* mac,
       retval = ERROR;
     else {
       // Concatenate macro values for all contactgroup members.
-      for (contact_map_unsafe::const_iterator
-               it{cg->second->get_members().begin()},
-           end{cg->second->get_members().end()};
+      for (contact_map::const_iterator it = cg->second->get_members().begin(),
+                                       end = cg->second->get_members().end();
            it != end; ++it) {
         if (it->second) {
           // Get the macro value for this contact.
           std::string buffer;
-          grab_standard_contact_macro_r(mac, macro_type, it->second, buffer);
+          grab_standard_contact_macro_r(mac, macro_type, it->second.get(),
+                                        buffer);
           // Add macro value to already running macro.
           if (output.empty())
             output = buffer;
@@ -907,7 +907,6 @@ int grab_macro_value_r(nagios_macros* mac,
                        std::string& output,
                        int* clean_options,
                        int* free_macro) {
-  char* buf = nullptr;
   char* ptr = nullptr;
   char* arg[2] = {nullptr, nullptr};
   contact* temp_contact = nullptr;
@@ -919,14 +918,14 @@ int grab_macro_value_r(nagios_macros* mac,
     return ERROR;
 
   /* work with a copy of the original buffer */
-  buf = string::dup(macro_name.c_str());
+  std::unique_ptr<char[]> buf(string::dup(macro_name.c_str()));
 
   /* BY DEFAULT, TELL CALLER TO FREE MACRO BUFFER WHEN DONE */
   *free_macro = true;
 
   /* see if there's an argument - if so, this is most likely an on-demand macro
    */
-  if ((ptr = strchr(buf, ':'))) {
+  if ((ptr = strchr(buf.get(), ':'))) {
     ptr[0] = '\x0';
     ptr++;
 
@@ -949,7 +948,7 @@ int grab_macro_value_r(nagios_macros* mac,
     if (macro_x_names[x].empty())
       continue;
 
-    if (strcmp(macro_x_names[x].c_str(), buf) == 0) {
+    if (strcmp(macro_x_names[x].c_str(), buf.get()) == 0) {
       engine_logger(dbg_macros, most)
           << "  macros[" << x << "] (" << macro_x_names[x] << ") match.";
       macros_logger->trace("  macros[{}] ({}) match.", x, macro_x_names[x]);
@@ -987,7 +986,6 @@ int grab_macro_value_r(nagios_macros* mac,
     }
 
     if (!x || x > MAX_COMMAND_ARGUMENTS) {
-      delete[] buf;
       return ERROR;
     }
 
@@ -1007,7 +1005,6 @@ int grab_macro_value_r(nagios_macros* mac,
     }
 
     if (!x || x > MAX_USER_MACROS) {
-      delete[] buf;
       return ERROR;
     }
 
@@ -1033,7 +1030,6 @@ int grab_macro_value_r(nagios_macros* mac,
     if (arg[0] == nullptr) {
       /* use the saved pointer */
       if ((temp_contact = mac->contact_ptr) == nullptr) {
-        delete[] buf;
         return ERROR;
       }
 
@@ -1050,15 +1046,15 @@ int grab_macro_value_r(nagios_macros* mac,
           return ERROR;
 
         /* concatenate macro values for all contactgroup members */
-        for (contact_map_unsafe::const_iterator
-                 it{cg_it->second->get_members().begin()},
-             end{cg_it->second->get_members().end()};
+        for (contact_map::const_iterator
+                 it = cg_it->second->get_members().begin(),
+                 end = cg_it->second->get_members().end();
              it != end; ++it) {
           if (!it->second)
             continue;
 
           /* get the macro value for this contact */
-          grab_contact_address_macro(x, it->second, temp_buffer);
+          grab_contact_address_macro(x, it->second.get(), temp_buffer);
 
           if (temp_buffer.empty())
             continue;
@@ -1078,7 +1074,6 @@ int grab_macro_value_r(nagios_macros* mac,
         /* find the contact */
         contact_map::const_iterator it{contact::contacts.find(arg[0])};
         if (it == contact::contacts.end()) {
-          delete[] buf;
           return ERROR;
         }
 
@@ -1111,8 +1106,21 @@ int grab_macro_value_r(nagios_macros* mac,
     result = ERROR;
   }
 
-  /* free memory */
-  delete[] buf;
+  // some macros are encrypted?
+  if (credentials_decrypt) {
+    if (!output.compare(0, 5, "raw::")) {
+      output.erase(0, 5);
+    } else if (!output.compare(0, 9, "encrypt::")) {
+      try {
+        output =
+            credentials_decrypt->decrypt(std::string_view(output).substr(9));
+      } catch (const std::exception& e) {
+        SPDLOG_LOGGER_ERROR(macros_logger,
+                            "fail to decrypt content of macro {}: {}",
+                            macro_name, e.what());
+      }
+    }
+  }
   return result;
 }
 

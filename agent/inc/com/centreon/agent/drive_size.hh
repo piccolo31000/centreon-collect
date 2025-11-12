@@ -193,7 +193,9 @@ class drive_size_thread
 
   std::shared_ptr<spdlog::logger> _logger;
 
-  bool has_to_stop_wait() const { return !_active || !_queue.empty(); }
+  bool has_to_stop_wait() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(_queue_m) {
+    return !_active || !_queue.empty();
+  }
 
  public:
   typedef std::list<fs_stat> (
@@ -249,10 +251,7 @@ class check_drive_size : public check {
   check_drive_size(const std::shared_ptr<asio::io_context>& io_context,
                    const std::shared_ptr<spdlog::logger>& logger,
                    time_point first_start_expected,
-                   duration check_interval,
-                   const std::string& serv,
-                   const std::string& cmd_name,
-                   const std::string& cmd_line,
+                   const Service& serv,
                    const rapidjson::Value& args,
                    const engine_to_agent_request_ptr& cnf,
                    check::completion_handler&& handler,

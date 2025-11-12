@@ -168,6 +168,8 @@ message AdaptiveServiceStatus {
   optional int32 scheduled_downtime_depth = 5;
   optional AckType acknowledgement_type = 6;
   optional int32 notification_number = 7;
+  optional int64 next_check = 8;
+  optional bool should_be_scheduled = 9;
 }
 
 /**
@@ -430,6 +432,8 @@ message AdaptiveHostStatus {
   optional int32 scheduled_downtime_depth = 2;
   optional AckType acknowledgement_type = 3;
   optional int32 notification_number = 4;
+  optional int64 next_check = 5;
+  optional bool should_be_scheduled = 6;
 }
 /**
  * @brief Message used to send adaptive host configuration. When only one
@@ -650,6 +654,7 @@ message Instance {
   int64 start_time = 8;
   string version = 9;
   string engine_config_version = 10;
+  bool is_encryption_ready = 11;
 }
 
 /* io::neb, neb::de_pb_responsive_instance, 19 */
@@ -680,34 +685,6 @@ message Acknowledgement {
   uint32 state = 12;
 }
 
-/* io::neb, neb::de_pb_host_dependency, 21 */
-message HostDependency {
-  BBDOHeader header = 1;
-
-  string dependency_period = 2;
-  uint64 dependent_host_id = 3;
-  bool enabled = 4;
-  string execution_failure_options = 5;
-  uint64 host_id = 6;
-  bool inherits_parent = 7;
-  string notification_failure_options = 8;
-}
-
-/* io::neb, neb::de_pb_service_dependency, 22 */
-message ServiceDependency {
-  BBDOHeader header = 1;
-
-  string dependency_period = 2;
-  uint64 dependent_host_id = 3;
-  bool enabled = 4;
-  string execution_failure_options = 5;
-  uint64 host_id = 6;
-  bool inherits_parent = 7;
-  string notification_failure_options = 8;
-  uint64 dependent_service_id = 9;
-  uint64 service_id = 10;
-}
-
 /* io::neb, neb::de_pb_host_group, 23 */
 message HostGroup {
   BBDOHeader header = 1;
@@ -716,6 +693,7 @@ message HostGroup {
   uint64 hostgroup_id = 3;
   string name = 4;
   uint64 poller_id = 5;
+  string alias = 6;
 }
 
 /* io::neb, neb::de_pb_service_group, 24 */
@@ -851,7 +829,7 @@ message AgentInfo {
   bool reverse = 4;
   string os = 5;
   string os_version = 6;
-  uint32 nb_agent = 7; 
+  uint32 nb_agent = 7;
 }
 
 /* io::neb, neb::de_pb_agent_stats, 57 */

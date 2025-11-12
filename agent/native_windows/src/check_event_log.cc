@@ -39,10 +39,7 @@ using namespace com::centreon::agent;
  * @param io_context Shared pointer to an asio::io_context object.
  * @param logger Shared pointer to an spdlog::logger object.
  * @param first_start_expected The expected first start time point.
- * @param check_interval The interval duration for checks.
- * @param serv The service name.
- * @param cmd_name The command name.
- * @param cmd_line The command line.
+ * @param serv The service.
  * @param args The JSON arguments for configuration.
  * @param cnf Shared pointer to the engine to agent request configuration.
  * @param handler The completion handler for the check.
@@ -54,10 +51,7 @@ check_event_log::check_event_log(
     const std::shared_ptr<asio::io_context>& io_context,
     const std::shared_ptr<spdlog::logger>& logger,
     time_point first_start_expected,
-    duration check_interval,
-    const std::string& serv,
-    const std::string& cmd_name,
-    const std::string& cmd_line,
+    const Service& serv,
     const rapidjson::Value& args,
     const engine_to_agent_request_ptr& cnf,
     check::completion_handler&& handler,
@@ -65,10 +59,7 @@ check_event_log::check_event_log(
     : check(io_context,
             logger,
             first_start_expected,
-            check_interval,
             serv,
-            cmd_name,
-            cmd_line,
             cnf,
             std::move(handler),
             stat) {
@@ -134,10 +125,7 @@ check_event_log::check_event_log(
  * @param io_context Shared pointer to an asio::io_context object.
  * @param logger Shared pointer to an spdlog::logger object.
  * @param first_start_expected The expected first start time point.
- * @param check_interval The interval duration for checks.
- * @param serv The service name.
- * @param cmd_name The command name.
- * @param cmd_line The command line.
+ * @param serv The service.
  * @param args The JSON arguments for configuration.
  * @param cnf Shared pointer to the engine to agent request configuration.
  * @param handler The completion handler for the check.
@@ -149,17 +137,14 @@ std::shared_ptr<check_event_log> check_event_log::load(
     const std::shared_ptr<asio::io_context>& io_context,
     const std::shared_ptr<spdlog::logger>& logger,
     time_point first_start_expected,
-    duration check_interval,
-    const std::string& serv,
-    const std::string& cmd_name,
-    const std::string& cmd_line,
+    const Service& serv,
     const rapidjson::Value& args,
     const engine_to_agent_request_ptr& cnf,
     check::completion_handler&& handler,
     const checks_statistics::pointer& stat) {
   std::shared_ptr<check_event_log> ret = std::make_shared<check_event_log>(
-      io_context, logger, first_start_expected, check_interval, serv, cmd_name,
-      cmd_line, args, cnf, std::move(handler), stat);
+      io_context, logger, first_start_expected, serv, args, cnf,
+      std::move(handler), stat);
 
   ret->_data->start();
 

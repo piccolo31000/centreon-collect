@@ -45,9 +45,6 @@ const std::string stream::_index_data_insert_request(
 const std::array<std::string, 5> stream::metric_type_name{
     "GAUGE", "COUNTER", "DERIVE", "ABSOLUTE", "AUTOMATIC"};
 
-const std::array<int, 5> stream::hst_ordered_status{0, 4, 2, 0, 1};
-const std::array<int, 5> stream::svc_ordered_status{0, 3, 4, 2, 1};
-
 static constexpr int32_t queue_timer_duration = 10;
 
 constexpr void (stream::*const stream::neb_processing_table[])(
@@ -238,8 +235,10 @@ stream::stream(const database_config& dbcfg,
   absl::MutexLock l(&_timer_m);
   _queues_timer.expires_after(std::chrono::seconds(queue_timer_duration));
   _queues_timer.async_wait([this](const boost::system::error_code& err) {
-    absl::ReaderMutexLock lck(&_barrier_timer_m);
-    _check_queues(err);
+    if (!err) {
+      absl::ReaderMutexLock lck(&_barrier_timer_m);
+      _check_queues(err);
+    }
   });
   _start_loop_timer();
   SPDLOG_LOGGER_INFO(_logger_sql, "Unified sql stream running loop_interval={}",
@@ -275,8 +274,7 @@ stream::~stream() noexcept {
     _comments->force_ready();
   if (_logs)
     _logs->force_ready();
-  boost::system::error_code ec;
-  _check_queues(ec);
+  _check_queues({});
   SPDLOG_LOGGER_DEBUG(_logger_sql, "unified sql: stream destruction");
 }
 
@@ -342,8 +340,7 @@ void stream::_load_caches() {
   /* index_data => _index_cache */
   _mysql.run_query_and_get_result(
       "SELECT "
-      "id,host_id,service_id,host_name,rrd_retention,check_interval,service_"
-      "description,"
+      "id,host_id,service_id,host_name,check_interval,service_description,"
       "special,locked FROM index_data",
       std::move(promise_index_data));
 
@@ -410,11 +407,10 @@ void stream::_load_caches() {
       index_info info{
           .index_id = res.value_as_u64(0),
           .host_name = res.value_as_str(3),
-          .service_description = res.value_as_str(6),
-          .rrd_retention = res.value_as_u32(4) ? res.value_as_u32(4) : _rrd_len,
-          .interval = res.value_as_u32(5),
-          .special = res.value_as_bool(7),
-          .locked = res.value_as_bool(8),
+          .service_description = res.value_as_str(5),
+          .interval = res.value_as_u32(4),
+          .special = res.value_as_bool(6),
+          .locked = res.value_as_bool(7),
       };
       int32_t host_id = res.value_as_i32(1);
       int32_t service_id = res.value_as_i32(2);
@@ -432,9 +428,8 @@ void stream::_load_caches() {
               "service_id "
               "<= 0, you should remove them.");
       } else {
-        _logger_sto->debug(
-            "unified_sql: loaded index {} of ({}, {}) with rrd_len={}",
-            info.index_id, host_id, service_id, info.rrd_retention);
+        _logger_sto->debug("unified_sql: loaded index {} of ({}, {})",
+                           info.index_id, host_id, service_id);
         _index_cache[{host_id, service_id}] = std::move(info);
 
         if (cache_ptr) {
@@ -1210,7 +1205,7 @@ void stream::update() {
 }
 
 void stream::_start_loop_timer() {
-  _loop_timer.expires_from_now(std::chrono::seconds(_loop_timeout));
+  _loop_timer.expires_after(std::chrono::seconds(_loop_timeout));
   _loop_timer.async_wait([this](const boost::system::error_code& err) {
     if (err) {
       return;

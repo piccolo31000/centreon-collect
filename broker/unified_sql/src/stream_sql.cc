@@ -286,8 +286,11 @@ void stream::_update_hosts_and_services_of_unresponsive_instances() {
  */
 void stream::_update_hosts_and_services_of_instance(uint32_t id,
                                                     bool responsive) {
+  // In order to not have following requests erased by waiting bulks, we flush
+  // and commit before
+  this->_check_queues({});
   int32_t conn = _mysql.choose_connection_by_instance(id);
-  _finish_action(conn, actions::hosts);
+  _finish_action(conn, actions::hosts | actions::resources);
   _finish_action(-1, actions::acknowledgements | actions::modules |
                          actions::downtimes | actions::comments);
 
@@ -302,37 +305,82 @@ void stream::_update_hosts_and_services_of_instance(uint32_t id,
         "UPDATE instances SET outdated=FALSE WHERE instance_id={}", id);
     _mysql.run_query(query, database::mysql_error::restore_instances, conn);
     _add_action(conn, actions::instances);
-    query = fmt::format(
-        "UPDATE hosts SET state=real_state,real_state=NULL WHERE "
-        "instance_id={} AND real_state IS NOT NULL",
-        id);
-    _mysql.run_query(query, database::mysql_error::restore_instances, conn);
-    _add_action(conn, actions::hosts);
-    query = fmt::format(
-        "UPDATE services AS s JOIN hosts as h ON h.host_id=s.host_id "
-        "SET s.state=s.real_state, s.real_state=NULL WHERE h.instance_id={} "
-        "and s.real_state IS NOT NULL",
-        id);
-    _mysql.run_query(query, database::mysql_error::restore_instances, conn);
-    _add_action(conn, actions::services);
+    if (_store_in_resources) {
+      query = fmt::format(
+          "UPDATE resources AS r JOIN hosts AS h ON h.host_id=r.id AND "
+          "r.parent_id=0 SET "
+          "r.status=h.real_state, h.state=h.real_state, status_ordered=(CASE "
+          "h.real_state WHEN 0 THEN 0 "
+          "WHEN 1 "
+          "THEN 4 WHEN 2 THEN 2 WHEN 3 THEN 0 WHEN 4 THEN 1 END), real_state = "
+          "NULL WHERE "
+          "h.real_state IS NOT NULL AND h.instance_id={}",
+          id);
+      _mysql.run_query(query, database::mysql_error::update_resources, conn);
+      query = fmt::format(
+          "UPDATE resources AS r JOIN services AS s ON s.host_id=r.parent_id "
+          "and "
+          "s.service_id=r.id SET r.status=s.real_state, s.state=s.real_state, "
+          "status_ordered=(CASE "
+          "s.real_state "
+          "WHEN 0 THEN 0 WHEN 1 THEN 3 WHEN 2 THEN 4 WHEN 3 THEN 2 WHEN 4 THEN "
+          "1 "
+          "END), s.real_state=NULL WHERE s.real_state IS NOT NULL AND "
+          "r.poller_id={};",
+          id);
+      _mysql.run_query(query, database::mysql_error::update_resources, conn);
+      _add_action(conn, actions::resources);
+    } else {
+      query = fmt::format(
+          "UPDATE hosts SET state=real_state,real_state=NULL WHERE "
+          "instance_id={} AND real_state IS NOT NULL",
+          id);
+      _mysql.run_query(query, database::mysql_error::restore_instances, conn);
+      _add_action(conn, actions::hosts);
+      query = fmt::format(
+          "UPDATE services AS s JOIN hosts as h ON h.host_id=s.host_id "
+          "SET s.state=s.real_state, s.real_state=NULL WHERE h.instance_id={} "
+          "and s.real_state IS NOT NULL",
+          id);
+      _mysql.run_query(query, database::mysql_error::restore_instances, conn);
+      _add_action(conn, actions::services);
+    }
     query = fmt::format(
         "UPDATE agent_information SET enabled = 1 WHERE poller_id={}", id);
     _mysql.run_query(query, database::mysql_error::restore_instances, conn);
-    _add_action(conn, actions::services);
   } else {
     query = fmt::format(
         "UPDATE instances SET outdated=TRUE WHERE instance_id={}", id);
     _mysql.run_query(query, database::mysql_error::restore_instances, conn);
     _add_action(conn, actions::instances);
+    constexpr uint32_t host_state =
+        static_cast<uint32_t>(com::centreon::engine::host::state_unreachable);
+    constexpr int host_ordered_state = hst_ordered_status[host_state];
+    constexpr uint32_t service_state =
+        static_cast<uint32_t>(com::centreon::engine::service::state_unknown);
+    constexpr int service_ordered_state = svc_ordered_status[service_state];
     query = fmt::format(
         "UPDATE hosts AS h LEFT JOIN services AS s ON h.host_id=s.host_id "
         "SET h.real_state=h.state,s.real_state=s.state,h.state={},s.state={} "
         "WHERE h.instance_id={}",
-        static_cast<uint32_t>(com::centreon::engine::host::state_unreachable),
-        static_cast<uint32_t>(com::centreon::engine::service::state_unknown),
-        id);
+        host_state, service_state, id);
     _mysql.run_query(query, database::mysql_error::restore_instances, conn);
     _add_action(conn, actions::hosts);
+    if (_store_in_resources) {
+      query = fmt::format(
+          "UPDATE resources SET status={}, status_ordered={}  WHERE "
+          "parent_id=0 "
+          "AND poller_id= {}",
+          host_state, host_ordered_state, id);
+      _mysql.run_query(query, database::mysql_error::update_resources, conn);
+      query = fmt::format(
+          "UPDATE resources SET status={}, status_ordered={}  WHERE "
+          "parent_id!=0 "
+          "AND poller_id= {}",
+          service_state, service_ordered_state, id);
+      _mysql.run_query(query, database::mysql_error::update_resources, conn);
+      _add_action(conn, actions::resources);
+    }
     query = fmt::format(
         "UPDATE agent_information SET enabled = 0 WHERE poller_id={}", id);
     _mysql.run_query(query, database::mysql_error::restore_instances, conn);
@@ -576,13 +624,11 @@ void stream::_process_comment(const std::shared_ptr<io::data>& d) {
   if (_comments->is_bulk()) {
     auto binder = [&](database::mysql_bulk_bind& b) {
       b.set_value_as_str(
-          0, misc::string::escape(cmmnt.author,
-                                  get_centreon_storage_comments_col_size(
-                                      centreon_storage_comments_author)));
+          0, cmmnt.author.substr(0, get_centreon_storage_comments_col_size(
+                                        centreon_storage_comments_author)));
       b.set_value_as_i32(1, cmmnt.comment_type);
       b.set_value_as_str(
-          2, misc::string::escape(cmmnt.data,
-                                  get_centreon_storage_comments_col_size(
+          2, cmmnt.data.substr(0, get_centreon_storage_comments_col_size(
                                       centreon_storage_comments_data)));
       if (cmmnt.deletion_time.is_null())
         b.set_null_i64(3);
@@ -701,14 +747,12 @@ void stream::_process_pb_comment(const std::shared_ptr<io::data>& d) {
   if (_comments->is_bulk()) {
     auto binder = [&](database::mysql_bulk_bind& b) {
       b.set_value_as_str(
-          0, misc::string::escape(cmmnt.author(),
-                                  get_centreon_storage_comments_col_size(
-                                      centreon_storage_comments_author)));
+          0, cmmnt.author().substr(0, get_centreon_storage_comments_col_size(
+                                          centreon_storage_comments_author)));
       b.set_value_as_i32(1, int(cmmnt.type()));
       b.set_value_as_str(
-          2, misc::string::escape(cmmnt.data(),
-                                  get_centreon_storage_comments_col_size(
-                                      centreon_storage_comments_data)));
+          2, cmmnt.data().substr(0, get_centreon_storage_comments_col_size(
+                                        centreon_storage_comments_data)));
       b.set_value_as_i64(3, cmmnt.deletion_time(),
                          mapping::entry::invalid_on_minus_one |
                              mapping::entry::invalid_on_zero);
@@ -899,9 +943,8 @@ void stream::_process_downtime(const std::shared_ptr<io::data>& d) {
         else
           b.set_value_as_i64(1, dd.actual_start_time);
         b.set_value_as_str(
-            2, misc::string::escape(dd.author,
-                                    get_centreon_storage_downtimes_col_size(
-                                        centreon_storage_downtimes_author)));
+            2, dd.author.substr(0, get_centreon_storage_downtimes_col_size(
+                                       centreon_storage_downtimes_author)));
         b.set_value_as_i32(3, dd.downtime_type);
         if (dd.deletion_time.is_null())
           b.set_null_i64(4);
@@ -932,9 +975,9 @@ void stream::_process_downtime(const std::shared_ptr<io::data>& d) {
         b.set_value_as_tiny(15, int(dd.was_cancelled));
         b.set_value_as_tiny(16, int(dd.was_started));
         b.set_value_as_str(
-            17, misc::string::escape(
-                    dd.comment, get_centreon_storage_downtimes_col_size(
-                                    centreon_storage_downtimes_comment_data)));
+            17,
+            dd.comment.substr(0, get_centreon_storage_downtimes_col_size(
+                                     centreon_storage_downtimes_comment_data)));
         b.next_row();
       };
       _downtimes->add_bulk_row(binder);
@@ -993,10 +1036,9 @@ void stream::_process_pb_downtime(const std::shared_ptr<io::data>& d) {
                            mapping::entry::invalid_on_minus_one);
         b.set_value_as_i64(1, dt_obj.actual_start_time(),
                            mapping::entry::invalid_on_minus_one);
-        b.set_value_as_str(
-            2, misc::string::escape(dt_obj.author(),
-                                    get_centreon_storage_downtimes_col_size(
-                                        centreon_storage_downtimes_author)));
+        b.set_value_as_str(2, dt_obj.author().substr(
+                                  0, get_centreon_storage_downtimes_col_size(
+                                         centreon_storage_downtimes_author)));
         b.set_value_as_i32(3, int(dt_obj.type()));
         b.set_value_as_i64(4, dt_obj.deletion_time(),
                            mapping::entry::invalid_on_minus_one);
@@ -1019,17 +1061,13 @@ void stream::_process_pb_downtime(const std::shared_ptr<io::data>& d) {
         b.set_value_as_tiny(15, int(dt_obj.cancelled()));
         b.set_value_as_tiny(16, int(dt_obj.started()));
         b.set_value_as_str(
-            17,
-            misc::string::escape(dt_obj.comment_data(),
-                                 get_centreon_storage_downtimes_col_size(
-                                     centreon_storage_downtimes_comment_data)));
+            17, dt_obj.comment_data().substr(
+                    0, get_centreon_storage_downtimes_col_size(
+                           centreon_storage_downtimes_comment_data)));
         b.next_row();
       };
       _downtimes->add_bulk_row(binder);
     } else {
-      _logger_sql->error("PB actual end time {} -> {}",
-                         dt_obj.actual_end_time(),
-                         uint64_not_null_not_neg_1{dt_obj.actual_end_time()});
       _downtimes->add_multi_row(fmt::format(
           "({},{},'{}',{},{},{},{},{},{},{},{},{},{},{},{},{},{},'{}')",
           uint64_not_null_not_neg_1{dt_obj.actual_end_time()},
@@ -2796,6 +2834,11 @@ void stream::_process_pb_adaptive_host_status(
     if (hscr.has_scheduled_downtime_depth())
       query += fmt::format("scheduled_downtime_depth={},",
                            hscr.scheduled_downtime_depth());
+    if (hscr.has_next_check())
+      query += fmt::format(" next_check={},", hscr.next_check());
+    if (hscr.has_should_be_scheduled())
+      query += fmt::format(" should_be_scheduled='{}',",
+                           hscr.should_be_scheduled() ? 1 : 0);
     if (query.size() > buf.size()) {
       query.resize(query.size() - 1);
       query += fmt::format(" WHERE host_id={}", hscr.host_id());
@@ -2934,7 +2977,8 @@ void stream::_process_pb_instance(const std::shared_ptr<io::data>& d) {
            {8, "start_time", 0, 0},
            {9, "version", 0,
             get_centreon_storage_instances_col_size(
-                centreon_storage_instances_version)}});
+                centreon_storage_instances_version)},
+           {11, "is_encryption_ready", 0, 0}});
     }
 
     // Process object.
@@ -3075,34 +3119,30 @@ void stream::_process_log(const std::shared_ptr<io::data>& d) {
       b.set_value_as_i64(1, le.host_id);
       b.set_value_as_i64(2, le.service_id);
       b.set_value_as_str(
-          3, misc::string::escape(le.host_name,
-                                  get_centreon_storage_logs_col_size(
-                                      centreon_storage_logs_host_name)));
-      b.set_value_as_str(
-          4, misc::string::escape(le.poller_name,
-                                  get_centreon_storage_logs_col_size(
-                                      centreon_storage_logs_instance_name)));
+          3, le.host_name.substr(0, get_centreon_storage_logs_col_size(
+                                        centreon_storage_logs_host_name)));
+      b.set_value_as_str(4, le.poller_name.substr(
+                                0, get_centreon_storage_logs_col_size(
+                                       centreon_storage_logs_instance_name)));
       b.set_value_as_i32(5, le.log_type);
       b.set_value_as_i32(6, le.msg_type);
+      b.set_value_as_str(7,
+                         le.notification_cmd.substr(
+                             0, get_centreon_storage_logs_col_size(
+                                    centreon_storage_logs_notification_cmd)));
       b.set_value_as_str(
-          7, misc::string::escape(le.notification_cmd,
-                                  get_centreon_storage_logs_col_size(
-                                      centreon_storage_logs_notification_cmd)));
-      b.set_value_as_str(8,
-                         misc::string::escape(
-                             le.notification_contact,
-                             get_centreon_storage_logs_col_size(
-                                 centreon_storage_logs_notification_contact)));
+          8, le.notification_contact.substr(
+                 0, get_centreon_storage_logs_col_size(
+                        centreon_storage_logs_notification_contact)));
       b.set_value_as_i32(9, le.retry);
       b.set_value_as_str(
-          10,
-          misc::string::escape(le.service_description,
-                               get_centreon_storage_logs_col_size(
-                                   centreon_storage_logs_service_description)));
+          10, le.service_description.substr(
+                  0, get_centreon_storage_logs_col_size(
+                         centreon_storage_logs_service_description)));
       b.set_value_as_tiny(11, le.status);
-      b.set_value_as_str(12, misc::string::escape(
-                                 le.output, get_centreon_storage_logs_col_size(
-                                                centreon_storage_logs_output)));
+      b.set_value_as_str(
+          12, le.output.substr(0, get_centreon_storage_logs_col_size(
+                                      centreon_storage_logs_output)));
       b.next_row();
     };
     _logs->add_bulk_row(binder);
@@ -3156,36 +3196,31 @@ void stream::_process_pb_log(const std::shared_ptr<io::data>& d) {
       b.set_value_as_i64(0, le_obj.ctime());
       b.set_value_as_i64(1, le_obj.host_id());
       b.set_value_as_i64(2, le_obj.service_id());
-      b.set_value_as_str(
-          3, misc::string::escape(le_obj.host_name(),
-                                  get_centreon_storage_logs_col_size(
-                                      centreon_storage_logs_host_name)));
-      b.set_value_as_str(
-          4, misc::string::escape(le_obj.instance_name(),
-                                  get_centreon_storage_logs_col_size(
-                                      centreon_storage_logs_instance_name)));
+      b.set_value_as_str(3, le_obj.host_name().substr(
+                                0, get_centreon_storage_logs_col_size(
+                                       centreon_storage_logs_host_name)));
+      b.set_value_as_str(4, le_obj.instance_name().substr(
+                                0, get_centreon_storage_logs_col_size(
+                                       centreon_storage_logs_instance_name)));
       b.set_value_as_i32(5, le_obj.type());
       b.set_value_as_i32(6, le_obj.msg_type());
+      b.set_value_as_str(7,
+                         le_obj.notification_cmd().substr(
+                             0, get_centreon_storage_logs_col_size(
+                                    centreon_storage_logs_notification_cmd)));
       b.set_value_as_str(
-          7, misc::string::escape(le_obj.notification_cmd(),
-                                  get_centreon_storage_logs_col_size(
-                                      centreon_storage_logs_notification_cmd)));
-      b.set_value_as_str(8,
-                         misc::string::escape(
-                             le_obj.notification_contact(),
-                             get_centreon_storage_logs_col_size(
-                                 centreon_storage_logs_notification_contact)));
+          8, le_obj.notification_contact().substr(
+                 0, get_centreon_storage_logs_col_size(
+                        centreon_storage_logs_notification_contact)));
       b.set_value_as_i32(9, le_obj.retry());
       b.set_value_as_str(
-          10,
-          misc::string::escape(le_obj.service_description(),
-                               get_centreon_storage_logs_col_size(
-                                   centreon_storage_logs_service_description)));
+          10, le_obj.service_description().substr(
+                  0, get_centreon_storage_logs_col_size(
+                         centreon_storage_logs_service_description)));
       b.set_value_as_tiny(11, le_obj.status());
       b.set_value_as_str(
-          12, misc::string::escape(le_obj.output(),
-                                   get_centreon_storage_logs_col_size(
-                                       centreon_storage_logs_output)));
+          12, le_obj.output().substr(0, get_centreon_storage_logs_col_size(
+                                            centreon_storage_logs_output)));
       b.next_row();
     };
     _logs->add_bulk_row(binder);
@@ -4279,16 +4314,13 @@ void stream::_check_and_update_index_cache(const Service& ss) {
         .index_id = index_id,
         .host_name = ss.host_name(),
         .service_description = ss.description(),
-        .rrd_retention = _rrd_len,
         .interval = ss.check_interval(),
         .special = special,
         .locked = false,
     };
-    SPDLOG_LOGGER_DEBUG(
-        _logger_sql,
-        "sql: loaded index {} of ({}, {}) with rrd_len={} and interval={}",
-        index_id, ss.host_id(), ss.service_id(), info.rrd_retention,
-        info.interval);
+    SPDLOG_LOGGER_DEBUG(_logger_sql,
+                        "sql: loaded index {} of ({}, {}) with interval={}",
+                        index_id, ss.host_id(), ss.service_id(), info.interval);
     _index_cache[{ss.host_id(), ss.service_id()}] = std::move(info);
 
     if (cache_ptr) {
@@ -4734,6 +4766,11 @@ void stream::_process_pb_adaptive_service_status(
     if (sscr.has_scheduled_downtime_depth())
       buf_query += fmt::format("scheduled_downtime_depth={},",
                                sscr.scheduled_downtime_depth());
+    if (sscr.has_next_check())
+      buf_query += fmt::format(" next_check={},", sscr.next_check());
+    if (sscr.has_should_be_scheduled())
+      buf_query += fmt::format(" should_be_scheduled='{}',",
+                               sscr.should_be_scheduled() ? 1 : 0);
     if (buf_query.size() > query.size()) {
       buf_query.resize(buf_query.size() - 1);
       buf_query += fmt::format(" WHERE host_id={} AND service_id={}",

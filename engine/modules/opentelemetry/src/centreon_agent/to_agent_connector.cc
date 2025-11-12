@@ -42,6 +42,7 @@ class agent_connection
   agent_connection(const std::shared_ptr<boost::asio::io_context>& io_context,
                    const std::shared_ptr<to_agent_connector>& parent,
                    const agent_config::pointer& conf,
+                   bool is_crypted,
                    const metric_handler& handler,
                    const std::shared_ptr<spdlog::logger>& logger,
                    const agent_stat::pointer& stats);
@@ -67,6 +68,7 @@ agent_connection::agent_connection(
     const std::shared_ptr<boost::asio::io_context>& io_context,
     const std::shared_ptr<to_agent_connector>& parent,
     const agent_config::pointer& conf,
+    bool is_crypted,
     const metric_handler& handler,
     const std::shared_ptr<spdlog::logger>& logger,
     const agent_stat::pointer& stats)
@@ -78,6 +80,7 @@ agent_connection::agent_connection(
           handler,
           logger,
           true,
+          is_crypted,
           stats),
       _parent(parent) {
   _peer = parent->get_conf()->get_hostport();
@@ -179,27 +182,14 @@ void to_agent_connector::start() {
     _connection->shutdown();
     _connection.reset();
   }
-  _connection =
-      std::make_shared<agent_connection>(_io_context, shared_from_this(), _conf,
-                                         _metric_handler, get_logger(), _stats);
+  _connection = std::make_shared<agent_connection>(
+      _io_context, shared_from_this(), _conf, get_conf()->is_crypted(),
+      _metric_handler, get_logger(), _stats);
   agent_connection::register_stream(_connection);
   _stub->async()->Import(&_connection->get_context(), _connection.get());
   _connection->start_read();
   _connection->AddHold();
   _connection->StartCall();
-}
-
-/**
- * @brief send conf to agent if something has changed (list of services,
- * commands...)
- *
- */
-void to_agent_connector::refresh_agent_configuration_if_needed(
-    const agent_config::pointer& new_conf) {
-  absl::MutexLock l(&_connection_m);
-  if (_connection) {
-    _connection->calc_and_send_config_if_needed(new_conf);
-  }
 }
 
 /**

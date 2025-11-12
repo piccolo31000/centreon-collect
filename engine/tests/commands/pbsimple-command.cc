@@ -18,10 +18,11 @@
  */
 
 #include <gtest/gtest.h>
+#include <spdlog/common.h>
 #include <com/centreon/engine/macros.hh>
 
 #include "../timeperiod/utils.hh"
-#include "com/centreon/engine/commands/raw.hh"
+#include "com/centreon/engine/commands/raw_v2.hh"
 #include "common/log_v2/log_v2.hh"
 #include "helper.hh"
 
@@ -71,23 +72,25 @@ class my_listener : public commands::command_listener {
 // When the add_command method is called with it as argument,
 // Then it returns a NULL pointer.
 TEST_F(PbSimpleCommand, NewCommandWithNoName) {
-  ASSERT_THROW(new commands::raw("", "bar"), std::exception);
+  ASSERT_THROW(new commands::raw_v2(g_io_context, "", "bar"), std::exception);
 }
 
 // Given a command to store,
 // When the add_command method is called with an empty value,
 // Then it returns a NULL pointer.
 TEST_F(PbSimpleCommand, NewCommandWithNoValue) {
-  std::unique_ptr<commands::raw> cmd;
-  ASSERT_THROW(cmd.reset(new commands::raw("foo", "")), std::exception);
+  std::shared_ptr<commands::raw_v2> cmd;
+  ASSERT_THROW(cmd.reset(new commands::raw_v2(g_io_context, "foo", "")),
+               std::exception);
 }
 
 // Given an already existing command
 // When the add_command method is called with the same name
 // Then it returns a NULL pointer.
 TEST_F(PbSimpleCommand, CommandAlreadyExisting) {
-  std::unique_ptr<commands::raw> cmd;
-  ASSERT_NO_THROW(cmd.reset(new commands::raw("toto", "/bin/ls")));
+  std::shared_ptr<commands::raw_v2> cmd;
+  ASSERT_NO_THROW(
+      cmd.reset(new commands::raw_v2(g_io_context, "toto", "/bin/ls")));
 }
 
 // Given a name and a command line
@@ -96,8 +99,8 @@ TEST_F(PbSimpleCommand, CommandAlreadyExisting) {
 // When sync executed
 // Then we have the output in the result class.
 TEST_F(PbSimpleCommand, NewCommandSync) {
-  std::unique_ptr<commands::command> cmd{
-      new commands::raw("test", "/bin/echo bonjour")};
+  std::shared_ptr<commands::command> cmd{
+      new commands::raw_v2(g_io_context, "test", "/bin/echo bonjour")};
   nagios_macros* mac(get_global_macros());
   commands::result res;
   std::string cc(cmd->process_cmd(mac));
@@ -113,8 +116,8 @@ TEST_F(PbSimpleCommand, NewCommandSync) {
 // Then we have the output in the result class.
 TEST_F(PbSimpleCommand, NewCommandAsync) {
   std::unique_ptr<my_listener> lstnr(new my_listener);
-  std::unique_ptr<commands::command> cmd{
-      new commands::raw("test", "/bin/echo bonjour")};
+  std::shared_ptr<commands::command> cmd{
+      new commands::raw_v2(g_io_context, "test", "/bin/echo bonjour")};
   cmd->set_listener(lstnr.get());
   nagios_macros* mac(get_global_macros());
   std::string cc(cmd->process_cmd(mac));
@@ -132,8 +135,8 @@ TEST_F(PbSimpleCommand, NewCommandAsync) {
 
 TEST_F(PbSimpleCommand, LongCommandAsync) {
   std::unique_ptr<my_listener> lstnr(new my_listener);
-  std::unique_ptr<commands::command> cmd{
-      new commands::raw("test", "/bin/sleep 10")};
+  std::shared_ptr<commands::command> cmd{
+      new commands::raw_v2(g_io_context, "test", "/bin/sleep 10")};
   cmd->set_listener(lstnr.get());
   nagios_macros* mac(get_global_macros());
   std::string cc(cmd->process_cmd(mac));
@@ -161,10 +164,17 @@ TEST_F(PbSimpleCommand, TooRecentDoubleCommand) {
   const char* path = "/tmp/TooRecentDoubleCommand";
   ::unlink(path);
   std::unique_ptr<my_listener> lstnr(std::make_unique<my_listener>());
-  std::unique_ptr<commands::command> cmd{std::make_unique<commands::raw>(
-      "test", "/bin/sh /tmp/TooRecentDoubleCommand.sh")};
+  std::shared_ptr<commands::command> cmd{std::make_unique<commands::raw_v2>(
+      g_io_context, "test", "/bin/sh /tmp/TooRecentDoubleCommand.sh")};
   cmd->set_listener(lstnr.get());
-  const void* caller[] = {nullptr, path};
+  /**
+   * @brief system that checks that a caller does not execute a command too
+   * frequently needs only void pointers, no needs of real notifier object, so
+   * we use this fake notifier array
+   *
+   */
+  const notifier* caller[] = {reinterpret_cast<const notifier*>(1),
+                              reinterpret_cast<const notifier*>(2)};
   cmd->add_caller_group(caller, caller + 2);
   nagios_macros* mac(get_global_macros());
   std::string cc(cmd->process_cmd(mac));
@@ -177,7 +187,7 @@ TEST_F(PbSimpleCommand, TooRecentDoubleCommand) {
   }
   std::this_thread::sleep_for(std::chrono::seconds(1));
   ASSERT_EQ(lstnr->get_result().exit_code, 0);
-  ASSERT_EQ(lstnr->get_result().exit_status, process::status::normal);
+  ASSERT_EQ(lstnr->get_result().exit_status, common::e_exit_status::normal);
   ASSERT_EQ(lstnr->get_result().output, "tutu");
   struct stat file_stat;
   ASSERT_EQ(stat(path, &file_stat), 0);
@@ -189,7 +199,7 @@ TEST_F(PbSimpleCommand, TooRecentDoubleCommand) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
   ASSERT_EQ(lstnr->get_result().exit_code, 0);
-  ASSERT_EQ(lstnr->get_result().exit_status, process::status::normal);
+  ASSERT_EQ(lstnr->get_result().exit_status, common::e_exit_status::normal);
   ASSERT_EQ(lstnr->get_result().output, "tutu");
   ASSERT_EQ(stat(path, &file_stat), 0);
   ASSERT_EQ(file_stat.st_size, 4);
@@ -203,10 +213,17 @@ TEST_F(PbSimpleCommand, SufficientOldDoubleCommand) {
   const char* path = "/tmp/TooRecentDoubleCommand";
   ::unlink(path);
   std::unique_ptr<my_listener> lstnr(std::make_unique<my_listener>());
-  std::unique_ptr<commands::command> cmd{std::make_unique<commands::raw>(
-      "test", "/bin/sh /tmp/TooRecentDoubleCommand.sh")};
+  std::shared_ptr<commands::command> cmd{std::make_unique<commands::raw_v2>(
+      g_io_context, "test", "/bin/sh /tmp/TooRecentDoubleCommand.sh")};
   cmd->set_listener(lstnr.get());
-  const void* caller[] = {nullptr, path};
+  /**
+   * @brief system that checks that a caller does not execute a command too
+   * frequently needs only void pointers, no needs of real notifier object, so
+   * we use this fake notifier array
+   *
+   */
+  const notifier* caller[] = {reinterpret_cast<const notifier*>(1),
+                              reinterpret_cast<const notifier*>(2)};
   cmd->add_caller_group(caller, caller + 2);
   nagios_macros* mac(get_global_macros());
   std::string cc(cmd->process_cmd(mac));
@@ -219,7 +236,7 @@ TEST_F(PbSimpleCommand, SufficientOldDoubleCommand) {
   }
   std::this_thread::sleep_for(std::chrono::seconds(1));
   ASSERT_EQ(lstnr->get_result().exit_code, 0);
-  ASSERT_EQ(lstnr->get_result().exit_status, process::status::normal);
+  ASSERT_EQ(lstnr->get_result().exit_status, common::e_exit_status::normal);
   ASSERT_EQ(lstnr->get_result().output, "tutu");
   struct stat file_stat;
   ASSERT_EQ(stat(path, &file_stat), 0);
@@ -233,7 +250,7 @@ TEST_F(PbSimpleCommand, SufficientOldDoubleCommand) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
   ASSERT_EQ(lstnr->get_result().exit_code, 0);
-  ASSERT_EQ(lstnr->get_result().exit_status, process::status::normal);
+  ASSERT_EQ(lstnr->get_result().exit_status, common::e_exit_status::normal);
   ASSERT_EQ(lstnr->get_result().output, "tutu");
   ASSERT_EQ(stat(path, &file_stat), 0);
   ASSERT_EQ(file_stat.st_size, 8);
@@ -241,8 +258,8 @@ TEST_F(PbSimpleCommand, SufficientOldDoubleCommand) {
 
 TEST_F(PbSimpleCommand, WithOneArgument) {
   auto lstnr = std::make_unique<my_listener>();
-  std::unique_ptr<commands::command> cmd{
-      std::make_unique<commands::raw>("test", "/bin/echo $ARG1$")};
+  std::shared_ptr<commands::command> cmd{std::make_unique<commands::raw_v2>(
+      g_io_context, "test", "/bin/echo $ARG1$")};
   cmd->set_listener(lstnr.get());
   nagios_macros* mac(get_global_macros());
   mac->argv[0] = "Hello";

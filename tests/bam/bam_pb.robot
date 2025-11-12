@@ -828,7 +828,7 @@ BEPB_DIMENSION_BA_BV_RELATION_EVENT
     Should Be True    len(@{query_results}) >= 1    We should have one line in mod_bam_reporting_relations_ba_bv table
     Disconnect From Database
 
-    [Teardown]    Run Keywords    Ctn Stop Engine    AND    Ctn Kindly Stop Broker    ${True}
+    [Teardown]    Ctn Stop Engine Broker And Save Logs    ${True}
 
 BEPB_DIMENSION_TIMEPERIOD
     [Documentation]    use of pb_dimension_timeperiod message.
@@ -1108,8 +1108,6 @@ BA_RATIO_NUMBER_BA_4_SERVICE
     Ctn Dump Ba On Error    ${result}    ${id_ba__sid[0]}
     Should Be True    ${result}    The BA test is not OK as expected
 
-    [Teardown]    Run Keywords    Ctn Stop Engine    AND    Ctn Kindly Stop Broker
-
 BA_RATIO_PERCENT_BA_4_SERVICE
     [Documentation]    With bbdo version 3.0.1, a BA of type 'ratio number' with 4 serv
     [Tags]    broker    engine    bam
@@ -1166,7 +1164,6 @@ BA_RATIO_PERCENT_BA_4_SERVICE
     Ctn Dump Ba On Error    ${result}    ${id_ba__sid[0]}
     Should Be True    ${result}    The BA test is not OK as expected
 
-    [Teardown]    Run Keywords    Ctn Stop Engine    AND    Ctn Kindly Stop Broker
 
 BA_CHANGED
     [Documentation]    A BA of type worst is configured with one service kpi.
@@ -1217,11 +1214,12 @@ BA_CHANGED
 
     Ctn Reload Broker
     Remove File    /tmp/ba.dot
+    #let time to broker to reload
+    Sleep     1s
     Ctn Broker Get Ba    51001    ${ba[0]}    /tmp/ba.dot
     Wait Until Created    /tmp/ba.dot
     ${result}    Grep File    /tmp/ba.dot    BOOL Service (16, 303)
     Should Not Be Empty    ${result}
-    [Teardown]    Run Keywords    Ctn Stop Engine    AND    Ctn Kindly Stop Broker
 
 BA_IMPACT_IMPACT
     [Documentation]    Given a Business Activity (BA) of type "impact"
@@ -1305,8 +1303,6 @@ BA_IMPACT_IMPACT
         Should Be True    ${result}    The BA changed during Broker reload.
     END
 
-    [Teardown]    Run Keywords    Ctn Stop Engine    AND    Ctn Kindly Stop Broker
-
 BA_DISABLED
     [Documentation]    create a disabled BA with timeperiods and reporting filter don't create error message
     [Tags]    broker    engine    bam    MON-33778
@@ -1348,12 +1344,9 @@ BA_SERVICE_PNAME_AFTER_RELOAD
     ${ba}    Ctn Create Ba With Services    test    worst    ${svc}
 
     Ctn Start Broker
-    ${start}    Get Current Date
+    ${start}    Ctn Get Round Current Date
     Ctn Start Engine
-    # Let's wait for the external command check start
-    ${content}    Create List    check_for_external_commands()
-    ${result}    Ctn Find In Log With Timeout    ${engineLog0}    ${start}    ${content}    60
-    Should Be True    ${result}    A message telling check_for_external_commands() should be available.
+    Ctn Wait For Engine To Be Ready    ${start}
 
     # Both services ${state} => The BA parent is ${state}
     Ctn Process Service Result Hard
@@ -1366,10 +1359,18 @@ BA_SERVICE_PNAME_AFTER_RELOAD
     Ctn Dump Ba On Error    ${result}    ${ba[0]}
     Should Be True    ${result}    The BA test is not OK as expected
 
-    Connect To Database    pymysql    ${DBName}    ${DBUser}    ${DBPass}    ${DBHost}    ${DBPort}
-    ${output}    Query
-    ...    SELECT name, parent_name FROM resources WHERE id=${ba[1]}
-    Should Be Equal As Strings    ${output}    (('test', '_Module_BAM_1'),)    name or parent name of ba ${ba[1]} is not as expected
+    FOR    ${i}    IN RANGE    10
+        Connect To Database    pymysql    ${DBName}    ${DBUser}    ${DBPass}    ${DBHost}    ${DBPort}
+        ${output}    Query
+        ...    SELECT name, parent_name FROM resources WHERE id=${ba[1]}
+	Log To Console    ${output}
+        IF    ${output} == (('test', '_Module_BAM_1'),)
+	    BREAK
+	END
+        Disconnect From Database
+	Sleep    5s
+    END
+    Should Be Equal As Strings    ${output}    (('test', '_Module_BAM_1'),)    Name or parent name of ba ${ba[1]} is not as expected
 
     Ctn Reload Broker
 
@@ -1379,10 +1380,33 @@ BA_SERVICE_PNAME_AFTER_RELOAD
     ...    SELECT name, parent_name FROM resources WHERE id=${ba[1]}
     Should Be Equal As Strings    ${output}    (('test', '_Module_BAM_1'),)    name or parent name of ba ${ba[1]} is not as expected
 
+BAM_RELOAD_ON_CBD_RELOAD
+    [Documentation]    Given broker with bam configured
+    ...    we should find bam restart after broker reload
 
-    [Teardown]    Run Keywords    Ctn Stop Engine    AND    Ctn Kindly Stop Broker
+    [Tags]    broker    downtime    engine    bam    MON-191611
+    Ctn BAM Init
 
+    @{svc}    Set Variable    ${{ [("host_16", "service_314"), ("host_16", "service_303")] }}
+    ${ba__svc}    Ctn Create Ba With Services    test    worst    ${svc}
+    ${start}    Ctn Get Round Current Date
+    Ctn Start Broker
+    Ctn Start Engine
 
+    # Let's wait for the external command check start
+    Ctn Wait For Engine To Be Ready    ${start}    ${1}
+
+    ${content}    Create List    create endpoint bam for endpoint
+    ${result}    Ctn Find In Log With Timeout    ${centralLog}    ${start}    ${content}    60
+    Should Be True    ${result}    A message telling 'create endpoint bam for endpoint' should be available after cbd start.
+
+    Sleep     2s
+
+    ${start}    Ctn Get Round Current Date
+    Ctn Reload Broker
+    
+    ${result}    Ctn Find In Log With Timeout    ${centralLog}    ${start}    ${content}    60
+    Should Be True    ${result}    A message telling 'create endpoint bam for endpoint' should be available after cbd reload.
 
 *** Keywords ***
 Ctn BAM Setup
