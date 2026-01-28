@@ -660,6 +660,8 @@ BEOTEL_CENTREON_AGENT_CHECK_NATIVE_CPU
     ${metrics_list}    Create List   cpu.utilization.percentage    0#core.cpu.utilization.percentage
     ${result}    Ctn Compare Metrics Of Service    1    ${metrics_list}    60
     Should Be True    ${result}    metrics not updated
+    ${result}    Ctn Check Commandline Service With Timeout Rt    host_1    service_1    30   {"check": "cpu_percentage"}
+    Should Be True    ${result}    command line not found in db
 
 
     #a small threshold to make service_1 warning
@@ -670,6 +672,9 @@ BEOTEL_CENTREON_AGENT_CHECK_NATIVE_CPU
     Ctn Reload Engine
     ${result}     Ctn Check Service Resource Status With Timeout    host_1    service_1    1    60    ANY
     Should Be True    ${result}    resources table not updated
+    ${result}    Ctn Check Commandline Service With Timeout Rt    host_1    service_1    30   {"check": "cpu_percentage", "args": {"warning-average" : "0.01"}}
+    Should Be True    ${result}    command line not found in db
+
 
     #a small threshold to make service_1 critical
     Ctn Engine Config Replace Value In Services    ${0}    service_1    check_command    otel_check3
@@ -679,6 +684,8 @@ BEOTEL_CENTREON_AGENT_CHECK_NATIVE_CPU
     Ctn Reload Engine
     ${result}     Ctn Check Service Resource Status With Timeout    host_1    service_1    2    60    ANY
     Should Be True    ${result}    resources table not updated
+    ${result}    Ctn Check Commandline Service With Timeout Rt    host_1    service_1    30   {"check": "cpu_percentage", "args": {"critical-average" : "0.02", "warning-average" : "0.01"}}
+    Should Be True    ${result}    command line not found in db
 
 
 BEOTEL_CENTREON_AGENT_CHECK_NATIVE_STORAGE
@@ -806,7 +813,7 @@ BEOTEL_CENTREON_AGENT_CHECK_NATIVE_UPTIME
     #a small threshold to make service_1 warning
     Ctn Engine Config Replace Value In Services    ${0}    service_1    check_command    otel_check2
 
-    Ctn Engine Config Add Command    ${0}    otel_check2   {"check": "uptime", "args": {"warning-uptime" : "1000000000"}}    OTEL connector
+    Ctn Engine Config Add Command    ${0}    otel_check2   {"check": "uptime", "args": {"warning-uptime" : "1000000000:"}}    OTEL connector
 
     Ctn Reload Engine
     ${result}     Ctn Check Service Resource Status With Timeout    host_1    service_1    1    60    ANY
@@ -815,7 +822,7 @@ BEOTEL_CENTREON_AGENT_CHECK_NATIVE_UPTIME
     #a small threshold to make service_1 critical
     Ctn Engine Config Replace Value In Services    ${0}    service_1    check_command    otel_check3
 
-    Ctn Engine Config Add Command    ${0}    otel_check3   {"check": "uptime", "args": {"critical-uptime" : "1000000000"}}    OTEL connector
+    Ctn Engine Config Add Command    ${0}    otel_check3   {"check": "uptime", "args": {"critical-uptime" : "1000000000:"}}    OTEL connector
 
     Ctn Reload Engine
     ${result}     Ctn Check Service Resource Status With Timeout    host_1    service_1    2    60    ANY
@@ -946,7 +953,7 @@ BEOTEL_CENTREON_AGENT_CHECK_NATIVE_SERVICE
     #a small threshold to make service_1 warning
     Ctn Engine Config Replace Value In Services    ${0}    service_1    check_command    otel_check2
 
-    Ctn Engine Config Add Command    ${0}    otel_check2   {"check": "service", "args": {"warning-total-running" : "1000"}}    OTEL connector
+    Ctn Engine Config Add Command    ${0}    otel_check2   {"check": "service", "args": {"warning-total-running" : "1000:"}}    OTEL connector
 
     Ctn Reload Engine
     ${result}     Ctn Check Service Resource Status With Timeout    host_1    service_1    1    60    ANY
@@ -955,7 +962,7 @@ BEOTEL_CENTREON_AGENT_CHECK_NATIVE_SERVICE
     #a small threshold to make service_1 critical
     Ctn Engine Config Replace Value In Services    ${0}    service_1    check_command    otel_check3
 
-    Ctn Engine Config Add Command    ${0}    otel_check3   {"check": "service", "args": {"critical-total-running" : "1000"}}    OTEL connector
+    Ctn Engine Config Add Command    ${0}    otel_check3   {"check": "service", "args": {"critical-total-running" : "1000:"}}    OTEL connector
 
     Ctn Reload Engine
     ${result}     Ctn Check Service Resource Status With Timeout    host_1    service_1    2    60    ANY
@@ -1114,6 +1121,65 @@ BEOTEL_CENTREON_AGENT_CHECK_HEALTH
     Ctn Reload Engine
     ${result}     Ctn Check Service Resource Status With Timeout    host_1    service_2    2    60    ANY
     Should Be True    ${result}    resources table not updated for service_2
+
+
+BEOTEL_CENTREON_AGENT_CHECK_HOST_CRYPTED_MANY_AGENT
+    [Documentation]    Given an engine listening for incomming CMA connections,
+    ...    We connect two agent with the same host_name and engine must not crash
+    [Tags]    broker    engine    opentelemetry    MON-192382
+    Ctn Config Engine    ${1}    ${100}    ${1}
+
+    ${run_env}    Ctn Run Env
+    Pass Execution If    "${run_env}" == "WSL"    "This test is only for linux"
+
+    Ctn Add Otl ServerModule
+    ...    0
+    ...    {"otel_server":{"host": "0.0.0.0","port": 4318, "encryption": "full", "public_cert": "/tmp/server_grpc.crt", "private_key": "/tmp/server_grpc.key"}, "centreon_agent":{"export_period":5}, "max_length_grpc_log":0}
+    Ctn Config Add Otl Connector
+    ...    0
+    ...    OTEL connector
+    ...    opentelemetry --processor=centreon_agent --extractor=attributes --host_path=resource_metrics.resource.attributes.host.name --service_path=resource_metrics.resource.attributes.service.name
+
+    FOR     ${host_index}    IN RANGE    ${1}    ${100}
+        Ctn Engine Config Replace Value In Hosts    ${0}    host_${host_index}    check_command    otel_check_icmp
+        Ctn Set Hosts Passive    ${0}    host_${host_index}
+        Ctn Engine Config Set Value In Hosts    ${0}    host_${host_index}    check_interval    1
+    END
+    
+    ${echo_command}   Ctn Echo Command   "OK - 127.0.0.1: rta 0,010ms, lost 0%|rta=0,010ms;200,000;500,000;0; pl=0%;40;80;; rtmax=0,035ms;;;; rtmin=0,003ms;;;;"
+    Ctn Engine Config Add Command    ${0}    otel_check_icmp    ${echo_command}    OTEL connector
+    Ctn Engine Config Set Value    0    interval_length    10
+
+    Ctn Engine Config Set Value    0    log_level_checks    trace
+
+    Ctn Config Broker    central
+    Ctn Config Broker    module
+    Ctn Config Broker    rrd
+    ${token}    Ctn Create Jwt Token    ${600}
+    Ctn Config Centreon Agent    ${None}    ${None}    /tmp/server_grpc.crt    ${token}     ${None}     full     ${True}     ${2}
+    Ctn Add Token Otl Server Module    0    ${token}   
+    Ctn Broker Config Log    central    sql    trace
+
+    Ctn Config BBDO3    1
+    Ctn Clear Retention
+
+    ${start}    Get Current Date
+    ${start_int}    Ctn Get Round Current Date
+    Ctn Start Broker
+    Ctn Start Engine
+    Ctn Start Agent    ${2}
+
+    # Let's wait for the otel server start
+    ${content}    Create List    encrypted server listening on 0.0.0.0:4318
+    ${result}    Ctn Find In Log With Timeout    ${engineLog0}    ${start}    ${content}    20
+    Should Be True    ${result}    "encrypted server listening on 0.0.0.0:4318" should be available.
+
+    Sleep    1
+
+    ${result}    Ctn Check Host Output Resource Status With Timeout    host_1    120    ${start_int}    0  HARD  OK - 127.0.0.1
+    Should Be True    ${result}    resources table not updated
+
+    [teardown]    Run Keywords     Ctn Kindly Stop Agent    ${2}     AND     Ctn Stop Engine Broker And Save Logs
 
 
 *** Keywords ***

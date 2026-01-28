@@ -358,12 +358,20 @@ Ctn Save Logs
     Log To Console      Save test logs
     Create Directory    failed
     ${failDir}    Catenate    SEPARATOR=    failed/    ${Test Name}
+    ${failDir0}    Catenate    SEPARATOR=    failed/    ${Test Name}    /config0
+    ${failDir1}    Catenate    SEPARATOR=    failed/    ${Test Name}    /config1
     Create Directory    ${failDir}
+    Create Directory    ${failDir0}
+    Create Directory    ${failDir1}
     Copy Files    ${BROKER_LOG}/*    ${failDir}
-    Copy Files    ${ENGINE_LOG}/config0/*.log    ${failDir}
-    Copy Files    ${ENGINE_LOG}/config0/*.dat    ${failDir}
+    Copy Files    ${ENGINE_LOG}/config0/*.log    ${failDir0}
+    Copy Files    ${ENGINE_LOG}/config0/*.dat    ${failDir0}
+    Copy Files    ${ENGINE_LOG}/config1/*.log    ${failDir1}
+    Copy Files    ${ENGINE_LOG}/config1/*.dat    ${failDir1}
+
     Copy Files    ${ENGINE_LOG}/*.log    ${failDir}
     Copy Files    ${EtcRoot}/centreon-engine/config0/*.cfg    ${failDir}/etc/centreon-engine/config0
+    Copy Files    ${EtcRoot}/centreon-engine/config1/*.cfg    ${failDir}/etc/centreon-engine/config1
     Copy Files    ${EtcRoot}/centreon-engine/*.json    ${failDir}/etc/centreon-engine
     Copy Files    ${EtcRoot}/centreon-broker/*.json    ${failDir}/etc/centreon-broker
     Move Files    /tmp/lua*.log    ${failDir}
@@ -426,7 +434,7 @@ Ctn Copy Coredump In Failed Dir
 
 Ctn Wait Or Dump And Kill Process
     [Arguments]    ${process_name}    ${binary_path}    ${timeout}
-    ${result}    Wait For Process    ${process_name}    timeout=${timeout}    on_timeout=continu
+    ${result}    Wait For Process    ${process_name}    timeout=${timeout}    on_timeout=continue
     ${test_none}    Set Variable If    $result is None    "not killed"    "killed"
     IF    ${test_none} == "not killed"
         ${pid}    Get Process Id    ${process_name}
@@ -488,10 +496,13 @@ Ctn Wait For Engine To Be Ready
 
 
 Ctn Start Agent
+    [Arguments]    ${nb_agent}=1
     ${run_env}    Ctn Run Env
 
     IF    "${run_env}" != "WSL"
-        Start Process    /usr/bin/centagent  ${EtcRoot}/centreon-engine/centagent.json    alias=centreon_agent     stdout=${ENGINE_LOG}/centagent-stdout.log    stderr=${ENGINE_LOG}/centagent-stderr.log
+        FOR    ${index_agent}    IN RANGE    ${nb_agent}
+            Start Process    /usr/bin/centagent  ${EtcRoot}/centreon-engine/centagent${index_agent}.json    alias=centreon_agent${index_agent}     stdout=${ENGINE_LOG}/centagent-stdout.log    stderr=${ENGINE_LOG}/centagent-stderr.log
+        END
     END
 
 Ctn Workspace Win
@@ -504,34 +515,36 @@ Ctn Workspace Win
     RETURN    None
     
 Ctn Kindly Stop Agent
+    [Arguments]    ${nb_agent}=1
     ${run_env}    Ctn Run Env
 
     IF    "${run_env}" == "WSL"
         RETURN
     END
 
-    #in most case centreon_agent is not started
-    ${centreon_agent_process}    Get Process Object  centreon_agent
+    FOR    ${index_agent}    IN RANGE    ${nb_agent}
+        #in most case centreon_agent is not started
+        ${centreon_agent_process}    Get Process Object  centreon_agent${index_agent}
 
-    IF  ${{$centreon_agent_process is None}}  RETURN
+        IF  ${{$centreon_agent_process is None}}  RETURN
 
-    Send Signal To Process    SIGTERM    centreon_agent
-    ${result}    Wait For Process    centreon_agent    timeout=60s
-    # In case of process not stopping
-    IF    "${result}" == "${None}"
-        Log To Console    "fail to stop centreon_agent"
-        Ctn Save Logs
-        Ctn Dump Process    centreon_agent    /usr/bin/centagent   centreon_agent
-        Send Signal To Process    SIGKILL    centreon_agent
-        Fail    centreon_agent not correctly stopped (coredump generated)
-    ELSE
-        IF    ${result.rc} != 0
+        Send Signal To Process    SIGTERM    centreon_agent${index_agent}
+        ${result}    Wait For Process    centreon_agent${index_agent}    timeout=60s
+        # In case of process not stopping
+        IF    "${result}" == "${None}"
+            Log To Console    "fail to stop centreon_agent"
             Ctn Save Logs
-            Ctn Coredump Info    centreon_agent    /usr/bin/centagent    centreon_agent
-            Fail   centreon_agent not correctly stopped, result status: ${result.rc} 
+            Ctn Dump Process    centreon_agent${index_agent}    /usr/bin/centagent   centreon_agent${index_agent}
+            Send Signal To Process    SIGKILL    centreon_agent${index_agent}
+            Fail    centreon_agent not correctly stopped (coredump generated)
+        ELSE
+            IF    ${result.rc} != 0
+                Ctn Save Logs
+                Ctn Coredump Info    centreon_agent${index_agent}    /usr/bin/centagent    centreon_agent${index_agent}
+                Fail   centreon_agent not correctly stopped, result status: ${result.rc} 
+            END
         END
     END
-
 
 Ctn Wait For Otel Server To Be Ready
     [Documentation]    Wait for engine otel server to be ready
