@@ -16,8 +16,7 @@
  * For more information : contact@centreon.com
  */
 #include "com/centreon/engine/broker.hh"
-#include <absl/strings/str_split.h>
-#include <unistd.h>
+#include <openssl/x509.h>
 #include "broker/core/bbdo/internal.hh"
 #include "com/centreon/broker/neb/acknowledgement.hh"
 #include "com/centreon/broker/neb/comment.hh"
@@ -39,6 +38,7 @@
 #include "com/centreon/common/time.hh"
 #include "com/centreon/common/utf8.hh"
 #include "com/centreon/engine/anomalydetection.hh"
+#include "com/centreon/engine/commands/otel_interface.hh"
 #include "com/centreon/engine/downtimes/downtime_manager.hh"
 #include "com/centreon/engine/downtimes/service_downtime.hh"
 #include "com/centreon/engine/flapping.hh"
@@ -48,6 +48,7 @@
 #include "com/centreon/engine/severity.hh"
 #include "com/centreon/engine/string.hh"
 #include "common.h"
+#include "common/crypto/cert_tree.hh"
 
 using namespace com::centreon::broker;
 using namespace com::centreon::engine;
@@ -4161,6 +4162,23 @@ void broker_program_state(int type, int flags [[maybe_unused]]) {
     inst.set_name(cbm->poller_name());
     inst.set_is_encryption_ready(credentials_decrypt.get() != nullptr);
 
+    std::shared_ptr<commands::otel::open_telemetry_base> otel_instance =
+        commands::otel::open_telemetry_base::instance();
+    if (otel_instance) {
+      try {
+        commands::otel::open_telemetry_base::certificate_info cert_info =
+            otel_instance->get_otel_service_certificate_info();
+        if (!cert_info.sha.empty()) {
+          inst.set_cma_cert_sha(cert_info.sha);
+          inst.set_cma_cert_cn(cert_info.cn);
+          inst.set_cma_cert_peremption(cert_info.peremption);
+        }
+      } catch (const std::exception& e) {
+        SPDLOG_LOGGER_ERROR(
+            neb_logger, "fail to get certificate informations: {}", e.what());
+      }
+    }
+
     switch (type) {
       case NEBTYPE_PROCESS_EVENTLOOPSTART: {
         neb_logger->debug("callbacks: generating process start event");
@@ -4834,5 +4852,18 @@ void broker_agent_stats(nebstruct_agent_stats_data& stats) {
     to_fill->set_nb_agent(cumul_data.nb_agent);
   }
 
+  cbm->write(to_send);
+}
+
+/**
+ * @brief called by opentelemetry module when an unknown agent connects to
+ * engine
+ *
+ * @param event
+ */
+void broker_agent_unknown_host(
+    const com::centreon::broker::UnknownHost& event) {
+  auto to_send = std::make_shared<neb::pb_unknown_host>(event);
+  to_send->mut_obj().set_poller_id(cbm->poller_id());
   cbm->write(to_send);
 }

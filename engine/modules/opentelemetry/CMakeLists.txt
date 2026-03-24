@@ -66,6 +66,7 @@ add_custom_command(
 # mod_externalcmd target.
 add_library(
   opentelemetry SHARED
+  ${SRC_DIR}/certificate_service.cc
   ${SRC_DIR}/centreon_agent/agent.grpc.pb.cc
   ${SRC_DIR}/centreon_agent/agent.pb.cc
   ${SRC_DIR}/centreon_agent/agent_check_result_builder.cc
@@ -93,12 +94,12 @@ target_precompile_headers(opentelemetry PRIVATE precomp_inc/precomp.hh)
 # set(EXTERNALCMD_MODULE "${EXTERNALCMD_MODULE}" PARENT_SCOPE)
 target_link_libraries(
   opentelemetry
-  PRIVATE spdlog::spdlog
-          protobuf::libprotobuf
+  PRIVATE protobuf::libprotobuf
           Boost::program_options
           Boost::url
           centreon_http
           pb_open_telemetry_lib
+          fmt::fmt
           ctncrypto)
 
 add_dependencies(opentelemetry pb_open_telemetry_lib pb_header_lib pb_neb_lib
